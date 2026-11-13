@@ -1,7 +1,7 @@
 # Restaurant Ops: Developer Handover
 
 **Version:** 1.2.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
-**Status (2026-11-07):** feature-complete v1. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Not yet deployed or tested against a real Google Sheet / Apps Script.** No git commits yet.
+**Status (2026-11-13):** feature-complete v1. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. No git commits yet.
 
 This document is for the developer taking over the project. For end-user setup, see [README.md](../README.md).
 
@@ -29,7 +29,7 @@ A phone app for a restaurant's back office:
 ## 2. Architecture
 
 ```
- Phone (PWA, static files on Netlify)
+ Phone (PWA, static files on Vercel)
    │  POST { action, token, payload, lang }   (Content-Type: text/plain → no CORS preflight)
    ▼
  Google Apps Script web app  (backend/Server.gs + backend/Core.gs)
@@ -54,12 +54,13 @@ A phone app for a restaurant's back office:
 ## 3. Repository map
 
 ```
-app/                         ← deployable PWA (upload THIS folder to Netlify)
+app/                         ← deployable PWA (Vercel Root Directory = this folder)
   index.html                 shell; loads config.js, core.js, then js/app.js (module)
   config.js                  RESTO_CONFIG.apiUrl, the Apps Script /exec URL (optional)
   manifest.webmanifest       PWA manifest
   sw.js                      service worker: network-first, offline fallback to cache
-  _headers                   Netlify headers (CSP, no-cache for code)
+  vercel.json                Vercel headers (CSP, no-cache for code)
+  _headers                   same headers for Netlify (unused on Vercel; keep the two in sync)
   css/app.css                design system (tokens, light/dark, components)
   icons/                     PNG + SVG icons (regenerate: tools/make_icons.py)
   js/core.js                 ★ ALL business rules + schema (shared with server)
@@ -232,7 +233,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 - **Roles** are checked on the server for every action. The UI hiding buttons is a convenience, not the protection.
 - **XSS:** all HTML comes from the `html` template tag in `ui.js`, which escapes every interpolated value. Avoid `innerHTML` with raw strings; `raw()` is used only for constant markup.
 - **Web app access** is "Anyone" (required for phones). The API rejects every call without a valid session token, except `auth.login` and the GET health check.
-- **Netlify `_headers`:** a CSP that allows only `self` plus `script.google.com` / `script.googleusercontent.com`, plus `nosniff` and `frame-ancestors 'none'`.
+- **Hosting headers (`vercel.json`; `_headers` for Netlify):** a CSP that allows only `self` plus `script.google.com` / `script.googleusercontent.com`, plus `nosniff` and `frame-ancestors 'none'`.
 - Owner locked out? Run `resetOwnerPassword()` in the Apps Script editor; the new password appears in the log.
 
 ---
@@ -279,7 +280,7 @@ There are **no automated tests yet** (see the backlog). Verification so far has 
 |---|---|---|
 | Database | A Google Sheet in the owner's Google account | `setup()` / `setupThai()` adds missing tabs and is safe to re-run |
 | API | Apps Script bound to that Sheet | Paste `Server.gs`, `Core.gs`, `appsscript.json` → **Deploy → Manage deployments → Edit → New version** (keeps the URL) |
-| App | Netlify (drag the `app/` folder) | Site → **Deploys** → drag the `app/` folder again |
+| App | Vercel, https://restops-app.vercel.app/ (Root Directory `app`) | Redeploy from the Vercel dashboard or CLI (`vercel --prod` from `app/`), or push to the connected git branch |
 
 Release checklist:
 1. Bump `VERSION` in `core.js` and `CACHE` in `sw.js`.
@@ -296,7 +297,7 @@ Collect these from the current owner and store them in the team's password manag
 
 - [ ] Google account that **owns** the Sheet and the Apps Script, plus the Sheet URL
 - [ ] Apps Script **web-app URL** (`…/exec`) and deployment ID
-- [ ] Netlify account / team and the site name and URL
+- [ ] Vercel account / team and the project name (`restops-app`)
 - [ ] Owner login for the app (never commit it)
 - [ ] A shared **git remote**. The repo currently has **no commits and no remote**: commit, push, and give the next developer access.
 - [ ] The local preview entry lives in `Desktop/proj/.claude/launch.json` (named `restaurant-ops`). It's only needed for Claude Code previews; `tools/serve.py` works without it.
