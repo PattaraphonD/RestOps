@@ -7,6 +7,8 @@ const assert = require('node:assert/strict');
 
 const costingPath = path.join(__dirname, '..', 'app', 'js', 'costing.js');
 if (fs.existsSync(costingPath)) global.RestoCosting = require(costingPath);
+const pricingPath = path.join(__dirname, '..', 'app', 'js', 'pricing.js');
+if (fs.existsSync(pricingPath)) global.RestoPricing = require(pricingPath);
 global.RestoCore = require('../app/js/core.js');
 
 const tests = [];

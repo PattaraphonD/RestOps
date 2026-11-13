@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v2';
+const KEY = 'ro.demo.db.v3';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -239,6 +239,16 @@ function seed(api, db, lang) {
   as('users.save', { item: { username: 'manager', displayName: tx('Arthit (Manager)', 'อาทิตย์ (ผู้จัดการ)'), role: 'manager', password: DEMO_PASSWORD } });
   as('users.save', { item: { username: 'staff', displayName: tx('Ploy (Kitchen)', 'พลอย (ครัว)'), role: 'staff', password: DEMO_PASSWORD } });
 
+  // Sales channels: the first bootstrap turns the settings list into records; give them real terms,
+  // retire the generic "Delivery" row and add the two delivery apps (rates are typical, not contractual).
+  const migrated = as('bootstrap', {}).channels;
+  const chan = {};
+  chan.dine = as('channels.save', { item: { ...migrated[0], name: channels[0], type: 'dineIn', commissionPct: 0, packagingCost: 0 } }).id;
+  chan.take = as('channels.save', { item: { ...migrated[1], name: channels[1], type: 'takeaway', commissionPct: 0, packagingCost: 4 } }).id;
+  chan.grab = as('channels.save', { item: { name: 'Grab', type: 'delivery', commissionPct: 30, packagingCost: 6, commissionOnDiscounted: true } }).id;
+  chan.lineman = as('channels.save', { item: { name: 'LINE MAN', type: 'delivery', commissionPct: 30, packagingCost: 6, commissionOnDiscounted: true } }).id;
+  as('channels.save', { item: { ...migrated[2], active: false } });
+
   const sup = {};
   SUPPLIERS.forEach((s) => {
     const [name, contactName] = TH ? s.th : s.en;
@@ -273,7 +283,10 @@ function seed(api, db, lang) {
 
   const dish = {};
   MENU.forEach(([key, en, th, cat, price, , recipe]) => {
-    dish[key] = as('menu.save', { item: { name: tx(en, th), category: mcats[MCAT[cat]], price }, recipe: lines(recipe) }).id;
+    // Delivery apps: menu price + 20 %, rounded up to 5 (drinks keep the menu price).
+    const app = key === 'tea' || key === 'cola' ? null : Math.ceil(price * 1.2 / 5) * 5;
+    dish[key] = as('menu.save', { item: { name: tx(en, th), category: mcats[MCAT[cat]], price }, recipe: lines(recipe),
+      prices: app ? [{ channelId: chan.grab, price: app }, { channelId: chan.lineman, price: app }] : [] }).id;
   });
 
   const start = D(today, -62);
@@ -367,16 +380,20 @@ function seed(api, db, lang) {
     }
     produce(d, dow, d === start);
 
-    // Sales in two channels.
-    const dine = [], delivery = [];
+    // Sales across four channels: about 50 % dine-in, 10 % takeaway, 25 % Grab, 15 % LINE MAN.
+    const SPLIT = [['dine', 0.5], ['take', 0.1], ['grab', 0.25], ['lineman', 0.15]];
+    const byCh = { dine: [], take: [], grab: [], lineman: [] };
     MENU.forEach(([key, , , , , base]) => {
       const n = Math.max(0, Math.round(base * dayFactor * (0.8 + r() * 0.4)));
-      const split = Math.round(n * (0.55 + r() * 0.15));
-      if (split) dine.push({ menuItemId: dish[key], qty: split });
-      if (n - split) delivery.push({ menuItemId: dish[key], qty: n - split });
+      let left = n;
+      SPLIT.forEach(([c, share], i) => {
+        // The last channel takes whatever is left, so the day's total stays n.
+        const q = i === SPLIT.length - 1 ? left : Math.min(left, Math.round(n * share * (0.85 + r() * 0.3)));
+        left -= q;
+        if (q) byCh[c].push({ menuItemId: dish[key], qty: q });
+      });
     });
-    if (dine.length) as('sales.add', { date: d, channel: channels[0], lines: dine });
-    if (delivery.length) as('sales.add', { date: d, channel: channels[2], lines: delivery });
+    SPLIT.forEach(([c]) => { if (byCh[c].length) as('sales.add', { date: d, channelId: chan[c], lines: byCh[c] }); });
 
     // Waste a few times a week.
     if (r() < 0.35) {

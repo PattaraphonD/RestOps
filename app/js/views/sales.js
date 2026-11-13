@@ -89,6 +89,8 @@ function batchSheet(ctx, rows) {
     title: `${rows[0].channel || t('nav.sales')} · ${relDay(rows[0].date)}`,
     body: html`<p class="small muted" style="margin:0 2px 10px">${t('sales.enteredBy', { who: rows[0].createdBy, time: timeOf(rows[0].createdAt) })}
       ${canVoid ? t('sales.voidHelp') : t('sales.askManager')}</p>
+      ${rows.some((r) => !r.voided && r.commission) ? html`<div class="card" style="margin-bottom:10px"><div class="pl-row"><span>${t('sales.commissionLine')}</span>
+        <b class="tabular">−${money(rows.filter((r) => !r.voided).reduce((a, r) => a + (r.commission || 0), 0))}</b></div></div>` : ''}
       <div class="card"><ul class="list">${rows.map((r) => html`<li class="row ${r.voided ? 'voided' : ''}">
         <span class="grow"><div class="title">${r.itemName}</div><div class="sub">${r.qty} × ${money(r.unitPrice)}${r.voided ? ' · ' + t('common.voided') : ''}</div></span>
         <span class="value">${money(r.total)}</span>
@@ -119,7 +121,9 @@ function entrySheet(ctx) {
   const boot = ctx.state.boot;
   const menu = boot.menu.filter((m) => m.active);
   if (!menu.length) return toast(t('sales.noMenuText'), 'bad');
-  const channels = list(boot.settings.salesChannels);
+  const channels = (boot.channels || []).filter((c) => c.active);
+  let channelId = (channels[0] || {}).id;
+  const priceOf = (m) => (m.prices && m.prices[channelId] !== undefined ? m.prices[channelId] : m.price);
   const cats = {};
   menu.forEach((m) => (cats[m.category || t('common.other')] ||= []).push(m));
   const qtys = {};
@@ -129,13 +133,13 @@ function entrySheet(ctx) {
     body: html`<form id="f" novalidate>
       <div class="form-row">
         <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${day}" max="${today()}"></label>
-        <label class="field"><span class="label">${t('sales.channel')}</span><select class="select" name="channel">${options(channels, channels[0])}</select></label>
+        <label class="field"><span class="label">${t('sales.channel')}</span><select class="select" name="channelId">${options(channels.map((c) => ({ value: c.id, label: c.name })), channelId)}</select></label>
       </div>
       <div class="search" style="margin:0">${icon('search')}<input class="input" type="search" id="q" placeholder="${t('sales.findDish')}" aria-label="${t('sales.findDish')}"></div>
       <div class="dish-grid">${Object.keys(cats).sort().map((c) => html`<div data-cat>
         <div class="cat-title">${c}</div>
         ${cats[c].map((m) => html`<div class="dish-row" data-dish="${m.id}" data-name="${m.name.toLowerCase()}">
-          <div class="grow"><div class="title">${m.name}</div><div class="sub">${money(m.price)}${m.recipe.length ? '' : ' · ' + t('sales.noRecipe')}</div></div>
+          <div class="grow"><div class="title">${m.name}</div><div class="sub"><span data-price>${money(priceOf(m))}</span>${m.recipe.length ? '' : ' · ' + t('sales.noRecipe')}</div></div>
           <div class="stepper"><button type="button" data-step="-1" aria-label="${t('sales.oneLess', { name: m.name })}">${icon('minus')}</button>
             <input type="number" inputmode="numeric" min="0" step="1" value="" placeholder="0" aria-label="${t('sales.qtyOf', { name: m.name })}">
             <button type="button" data-step="1" aria-label="${t('sales.oneMore', { name: m.name })}">${icon('plus')}</button></div>
@@ -148,7 +152,7 @@ function entrySheet(ctx) {
       const form = el.querySelector('#f');
       const update = () => {
         let total = 0, count = 0;
-        Object.entries(qtys).forEach(([id, q]) => { const m = menu.find((x) => x.id === id); total += q * m.price; count += q; });
+        Object.entries(qtys).forEach(([id, q]) => { const m = menu.find((x) => x.id === id); total += q * priceOf(m); count += q; });
         el.querySelector('#total').textContent = money(total);
         el.querySelector('#count').textContent = t('sales.nItems', { n: count });
       };
@@ -164,6 +168,14 @@ function entrySheet(ctx) {
         row.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => set((Number(input.value) || 0) + Number(b.dataset.step))));
         input.addEventListener('input', () => set(input.value));
       });
+      form.channelId.addEventListener('change', () => {
+        channelId = form.channelId.value;
+        $$('[data-dish]', el).forEach((row) => {
+          const m = menu.find((x) => x.id === row.dataset.dish);
+          row.querySelector('[data-price]').textContent = money(priceOf(m));
+        });
+        update();
+      });
       el.querySelector('#q').addEventListener('input', (e) => {
         const q = e.target.value.trim().toLowerCase();
         $$('[data-dish]', el).forEach((r) => r.classList.toggle('hidden', !!q && !r.dataset.name.includes(q)));
@@ -171,7 +183,7 @@ function entrySheet(ctx) {
       });
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
         const lines = Object.entries(qtys).map(([menuItemId, qty]) => ({ menuItemId, qty }));
-        const r = await call('sales.add', { date: form.date.value, channel: form.channel.value, lines });
+        const r = await call('sales.add', { date: form.date.value, channelId: form.channelId.value, lines });
         close();
         day = form.date.value;
         toast(t('sales.savedToast', { total: money(r.total) }));

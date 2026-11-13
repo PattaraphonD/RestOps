@@ -1,16 +1,16 @@
 """Copy the shared business logic into the Apps Script project.
 
-app/js/core.js and app/js/costing.js are the sources of truth. Run this after changing it:
+app/js/core.js, costing.js and pricing.js are the sources of truth. Run this after changing them:
 
     python tools/build_backend.py
 
-It writes backend/Core.gs and backend/Costing.gs. Paste Core.gs, Costing.gs, Server.gs and appsscript.json into the
+It writes backend/Core.gs, Costing.gs and Pricing.gs. Paste them with Server.gs and appsscript.json into the
 Apps Script editor (or push them with clasp).
 """
 from pathlib import Path
 
 root = Path(__file__).resolve().parent.parent
-for name in ("core", "costing"):
+for name in ("core", "costing", "pricing"):
     src = (root / "app" / "js" / f"{name}.js").read_text(encoding="utf-8")
     header = (
         f"// GENERATED from app/js/{name}.js by tools/build_backend.py. Do not edit here;\n"

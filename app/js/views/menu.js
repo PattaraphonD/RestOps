@@ -8,6 +8,8 @@ import { list } from '../app.js';
 import { t } from '../i18n.js';
 import { recipeLines } from './recipe-lines.js';
 import { ingredientSheet, itemSheet } from './stock.js';
+import { renderPricing, channelPriceEditor, selectChannel } from './pricing-view.js';
+import { renderAnalysis } from './analysis.js';
 
 const ui = { tab: 'dishes', search: '', sort: 'name' };
 const VARIANCE_FLAG = 10;
@@ -17,6 +19,15 @@ export async function render(ctx) {
   setTitle(t('menu.title'));
   // Stock sheets opened from here redraw this view (not Stock) after saving.
   const sctx = { ...ctx, redraw: () => render(ctx) };
+  // Deep link from the dashboard: #/menu/pricing/<channelId>
+  const [tab, arg] = ctx.params || [];
+  if (['dishes', 'preps', 'pricing', 'analysis'].includes(tab)) {
+    ui.tab = tab;
+    if (tab === 'pricing' && arg) selectChannel(arg);
+    history.replaceState(null, '', '#/menu');
+    ctx.params = [];
+  }
+  if (!can('manager') && (ui.tab === 'pricing' || ui.tab === 'analysis')) ui.tab = 'dishes';
   if (can('manager')) {
     const label = ui.tab === 'preps' ? t('menu.newPrep') : t('menu.newDish');
     setActions(html`<button class="icon-btn" id="new-item" aria-label="${label}">${icon('plus')}</button>`)
@@ -27,6 +38,8 @@ export async function render(ctx) {
     <div class="seg" role="group" aria-label="${t('menu.tabs')}" style="margin-top:4px">
       <button aria-pressed="${ui.tab === 'dishes'}" data-tab="dishes">${t('menu.tabDishes')}</button>
       <button aria-pressed="${ui.tab === 'preps'}" data-tab="preps">${t('menu.tabPreps')}</button>
+      ${can('manager') ? html`<button aria-pressed="${ui.tab === 'pricing'}" data-tab="pricing">${t('menu.tabPricing')}</button>
+        <button aria-pressed="${ui.tab === 'analysis'}" data-tab="analysis">${t('menu.tabAnalysis')}</button>` : ''}
     </div>
     <div id="menu-tab"></div>`);
   $$('[data-tab]', el).forEach((b) => b.addEventListener('click', () => {
@@ -35,7 +48,10 @@ export async function render(ctx) {
     render(ctx);
   }));
   const host = el.querySelector('#menu-tab');
-  if (ui.tab === 'preps') renderPreps(sctx, host); else renderDishes(ctx, host);
+  if (ui.tab === 'preps') renderPreps(sctx, host);
+  else if (ui.tab === 'pricing') renderPricing(ctx, host, { openDish: (m) => dishSheet(ctx, m) });
+  else if (ui.tab === 'analysis') renderAnalysis(ctx, host, { openDish: (m) => dishSheet(ctx, m) });
+  else renderDishes(ctx, host);
 }
 
 /* ---------------------------------------------------------------- dishes */
@@ -129,7 +145,8 @@ function dishSheet(ctx, item) {
   const target = Number(boot.settings.targetFoodCostPct) || 30;
   const cats = [...new Set([...list(boot.settings.menuCategories), ...boot.menu.map((m) => m.category).filter(Boolean)])];
   const isNew = !item;
-  item = item || { active: true, recipe: [] };
+  item = item || { active: true, recipe: [], prices: {} };
+  const chPrices = channelPriceEditor(boot, item);
   // Boot recipe lines carry the effective yield; only a value that differs from the ingredient's is an override.
   const initial = item.recipe.map((l) => {
     const ing = boot.ingredients.find((i) => i.id === l.ingredientId);
@@ -157,6 +174,7 @@ function dishSheet(ctx, item) {
       </div>
       <div class="section-head" style="margin-top:16px"><h2 style="font-size:15px">${t('menu.breakdown')}</h2></div>
       <div class="card"><ul class="list share-list" id="breakdown"></ul></div>
+      ${chPrices.html}
       ${isNew ? '' : html`<label class="check" style="margin-top:12px"><input type="checkbox" name="active" ${item.active ? raw('checked') : ''}> ${t('menu.onMenu')}</label>`}
     </form>`,
     foot: html`<button class="btn primary block" id="save">${isNew ? t('menu.addDish') : t('menu.saveDish')}</button>`,
@@ -173,10 +191,14 @@ function dishSheet(ctx, item) {
         el.querySelector('#margin').textContent = price ? money(price - total) : '—';
         el.querySelector('#suggest').textContent = total ? money(total / (target / 100)) : '—';
         mount(el.querySelector('#breakdown'), breakdownHtml(totals.lines));
+        if (recalcPrices) recalcPrices();
       };
+      let recalcPrices = null;
       const editor = recipeLines(el.querySelector('#lines'), {
         ingredients: boot.ingredients, lines: initial, onChange: (x) => { totals = x; summary(); },
       });
+      recalcPrices = chPrices.wire(el, () => (totals.problem ? 0 : totals.cost), () => Number(form.price.value) || 0);
+      recalcPrices();
       form.price.addEventListener('input', summary);
       el.querySelector('#add-line').addEventListener('click', () => editor.add().querySelector('select').focus());
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
@@ -186,6 +208,7 @@ function dishSheet(ctx, item) {
             item: { id: item.id, version: item.version, name: form.name.value, price: form.price.value, category: form.category.value,
               active: isNew ? true : form.active.checked },
             recipe,
+            prices: chPrices.values(el),
           });
         } catch (err) {
           if (err.code === 'CONFLICT') await ctx.refresh();

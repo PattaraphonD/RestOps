@@ -163,3 +163,47 @@ export function sparkline(points, { width = 280, height = 48, format = (v) => nu
     ${vals.length > 1 ? html`<path d="${d}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
     <circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}" r="3.5" fill="var(--series-1)"/></svg>`;
 }
+
+/**
+ * Menu engineering quadrant: x = share of dishes sold (%), y = margin per dish. Bubble area ∝ revenue.
+ * Divider lines at the popularity threshold and the average margin. Tapping a dot dispatches
+ * CustomEvent('pick', { detail: menuItemId }) on the container.
+ */
+const CLS_COLOR = { star: 'var(--good)', plowhorse: 'var(--series-1)', puzzle: 'var(--warn)', dog: 'var(--bad)' };
+export function quadrantChart(container, items, { avgCm, threshold, labels }) {
+  container.classList.add('chart');
+  const W = Math.max(300, container.clientWidth || 340), H = 280;
+  const L = 44, R = 12, T = 22, B = 34;
+  const maxX = Math.max(threshold * 2, ...items.map((i) => i.mixPct)) * 1.1 || 10;
+  const ys = items.map((i) => i.cmPerDish);
+  const maxY = Math.max(avgCm, ...ys, 1) * 1.15;
+  const minY = Math.min(0, ...ys) * 1.15;
+  const x = (v) => L + (v / maxX) * (W - L - R);
+  const y = (v) => T + (maxY - v) / (maxY - minY || 1) * (H - T - B);
+  const maxRev = Math.max(1, ...items.map((i) => i.revenue));
+  const rad = (rev) => 6 + 14 * Math.sqrt(Math.max(0, rev) / maxRev);
+  const tx = x(threshold), ty = y(avgCm);
+  const corner = (cls, cx, cy, anchor) => `<text class="ink" x="${cx}" y="${cy}" text-anchor="${anchor}" style="font-size:11px;font-weight:700;fill:${CLS_COLOR[cls]}">${esc(labels[cls])}</text>`;
+  let dots = '';
+  items.slice().sort((a, b) => b.revenue - a.revenue).forEach((i) => {
+    dots += `<g class="item dot" data-id="${esc(i.menuItemId)}" tabindex="0" role="button" aria-label="${esc(i.name)}">
+      <title>${esc(i.name)}: ${esc(labels[i.cls])}</title>
+      <circle cx="${x(i.mixPct).toFixed(1)}" cy="${y(i.cmPerDish).toFixed(1)}" r="${rad(i.revenue).toFixed(1)}"
+        fill="${CLS_COLOR[i.cls]}" fill-opacity=".55" stroke="${CLS_COLOR[i.cls]}" stroke-width="1.5"/></g>`;
+  });
+  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(labels.chart)}">
+    <desc>${esc(labels.desc)}</desc>
+    <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="var(--surface-2)" rx="6"/>
+    <line x1="${tx}" x2="${tx}" y1="${T}" y2="${H - B}" stroke="var(--line-strong)" stroke-dasharray="4 4"/>
+    <line x1="${L}" x2="${W - R}" y1="${ty}" y2="${ty}" stroke="var(--line-strong)" stroke-dasharray="4 4"/>
+    ${corner('puzzle', L + 6, T + 14, 'start')}${corner('star', W - R - 6, T + 14, 'end')}
+    ${corner('dog', L + 6, H - B - 6, 'start')}${corner('plowhorse', W - R - 6, H - B - 6, 'end')}
+    <text class="val" x="${(L + W - R) / 2}" y="${H - 8}" text-anchor="middle">${esc(labels.x)}</text>
+    <text class="val" x="12" y="${(T + H - B) / 2}" text-anchor="middle" transform="rotate(-90 12 ${(T + H - B) / 2})">${esc(labels.y)}</text>
+    ${dots}</svg>`;
+  const pick = (g) => container.dispatchEvent(new CustomEvent('pick', { detail: g.dataset.id }));
+  container.querySelectorAll('.dot').forEach((g) => {
+    g.addEventListener('click', () => pick(g));
+    g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(g); } });
+  });
+}

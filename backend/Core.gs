@@ -16,7 +16,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '1.3.0';
+  var VERSION = '1.4.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -38,7 +38,9 @@ var RestoCore = (function () {
     Menu: ['id', 'name', 'category', 'price', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
     Recipes: ['id', 'menuItemId', 'ingredientId', 'qty', 'note', 'unit', 'yieldPct'],
     Sales: ['id', 'date', 'menuItemId', 'itemName', 'qty', 'unitPrice', 'total', 'unitCost', 'costTotal',
-      'channel', 'note', 'voided', 'createdAt', 'createdBy'],
+      'channel', 'note', 'voided', 'createdAt', 'createdBy',
+      // unitPrice/total = what the restaurant is credited before commission; commission is a snapshot.
+      'channelId', 'commission', 'promoId', 'listPrice', 'discount', 'platformDiscount'],
     Expenses: ['id', 'date', 'category', 'description', 'amount', 'paymentMethod', 'note', 'voided',
       'createdAt', 'createdBy'],
     // Purchasing: orders to suppliers, and the suppliers' invoices matched against them.
@@ -54,14 +56,19 @@ var RestoCore = (function () {
     PrepRecipes: ['id', 'prepId', 'ingredientId', 'qty', 'unit', 'yieldPct', 'note'],
     CostChanges: ['id', 'date', 'ingredientId', 'oldCost', 'newCost', 'source', 'refId', 'createdAt', 'createdBy'],
     ProductionRuns: ['id', 'runNo', 'date', 'prepId', 'batches', 'expectedQty', 'producedQty', 'unit', 'inputCost',
-      'byproductValue', 'totalCost', 'unitCost', 'yieldPct', 'producedBy', 'note', 'voided', 'createdAt', 'createdBy']
+      'byproductValue', 'totalCost', 'unitCost', 'yieldPct', 'producedBy', 'note', 'voided', 'createdAt', 'createdBy'],
+    // Sales channels (dine-in, takeaway, delivery apps) with their commission and packaging cost per dish.
+    Channels: ['id', 'name', 'type', 'commissionPct', 'packagingCost', 'commissionOnDiscounted', 'active', 'sortOrder',
+      'createdAt', 'updatedAt', 'updatedBy', 'version'],
+    // A dish's price on one channel (no row = the dish's own price).
+    MenuPrices: ['id', 'menuItemId', 'channelId', 'price']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -78,8 +85,10 @@ var RestoCore = (function () {
     expenseCategories: 'Rent, Staff wages, Utilities, Gas, Packaging, Cleaning, Marketing, Repairs, Delivery fees, Other',
     ingredientCategories: 'Meat & Seafood, Produce, Dairy & Eggs, Dry goods, Sauces & Condiments, Beverages, Packaging',
     menuCategories: 'Mains, Noodles & Rice, Starters, Desserts, Drinks',
-    units: 'kg, g, L, ml, pcs, pack, bottle, can'
+    units: 'kg, g, L, ml, pcs, pack, bottle, can',
+    priceRounding: ''                 // '' = by currency (THB -> 5); else none | 1 | 5 | 10 | 0.99 | 9-ending
   };
+  var CHANNEL_TYPES = ['dineIn', 'takeaway', 'delivery', 'other'];
 
   // Used instead of the English lists when setup runs in Thai (initialize({ lang: 'th' })).
   var DEFAULT_SETTINGS_TH = {
@@ -255,6 +264,7 @@ var RestoCore = (function () {
     'Purchase order': 'ใบสั่งซื้อ', 'Invoice': 'ใบแจ้งหนี้', 'Order line': 'รายการสั่งซื้อ',
     'Batches': 'จำนวนรอบผลิต', 'Batch quantity': 'ปริมาณต่อรอบผลิต', 'Conversion factor': 'ตัวคูณการแปลงหน่วย',
     'Conversion unit': 'หน่วยที่แปลง', 'Shelf life (days)': 'อายุการเก็บ (วัน)', 'Quantity made': 'จำนวนที่ผลิตได้', 'Production run': 'การผลิต',
+    'Packaging cost': 'ค่าบรรจุภัณฑ์', 'From': 'ตั้งแต่วันที่', 'To': 'ถึงวันที่', 'Sales channel': 'ช่องทางการขาย', 'Commission %': 'ค่าคอมมิชชัน %',
     'cancelled': 'ถูกยกเลิก', 'closed': 'ปิดแล้ว', 'received': 'รับครบแล้ว', 'draft': 'เป็นฉบับร่าง',
     'sent': 'ส่งแล้ว', 'partial': 'รับบางส่วนแล้ว', 'paid': 'จ่ายแล้ว', 'disputed': 'โต้แย้งอยู่'
   };
@@ -267,7 +277,7 @@ var RestoCore = (function () {
     if ((m = /^Input (\d+) quantity$/.exec(l))) return 'จำนวนวัตถุดิบที่ใช้รายการที่ ' + m[1];
     if ((m = /^By-product (\d+) quantity$/.exec(l))) return 'จำนวนผลพลอยได้รายการที่ ' + m[1];
     if ((m = /^Recipe line (\d+) quantity$/.exec(l))) return 'ปริมาณในสูตรบรรทัดที่ ' + m[1];
-    if ((m = /^(Ingredient|Supplier|Dish|User) "([\s\S]*)"$/.exec(l))) return TH_LABELS[m[1]] + ' "' + m[2] + '"';
+    if ((m = /^(Ingredient|Supplier|Dish|User|Sales channel) "([\s\S]*)"$/.exec(l))) return TH_LABELS[m[1]] + ' "' + m[2] + '"';
     if ((m = /^([\s\S]+) quantity$/.exec(l))) return 'จำนวน ' + m[1];
     if ((m = /^([\s\S]+) price$/.exec(l))) return 'ราคา ' + m[1];
     return l;
@@ -352,6 +362,13 @@ var RestoCore = (function () {
     [/^Input (\d+): choose an ingredient\.$/, 'วัตถุดิบที่ใช้รายการที่ $1: กรุณาเลือกวัตถุดิบ'],
     [/^By-product (\d+): choose an ingredient\.$/, 'ผลพลอยได้รายการที่ $1: กรุณาเลือกวัตถุดิบ'],
     [/^Choose who made it\.$/, 'กรุณาเลือกผู้ผลิต'],
+    [/^Commission must be between 0 and 99\.9 %\.$/, 'ค่าคอมมิชชันต้องอยู่ระหว่าง 0 ถึง 99.9 %'],
+    [/^Unknown channel type\.$/, 'ไม่รู้จักประเภทช่องทางการขาย'],
+    [/^Keep at least one active sales channel\.$/, 'ต้องเปิดใช้งานช่องทางการขายอย่างน้อยหนึ่งช่องทาง'],
+    [/^Unknown price rounding\.$/, 'ไม่รู้จักรูปแบบการปัดราคา'],
+    [/^This sales channel is turned off\.$/, 'ช่องทางการขายนี้ปิดใช้งานอยู่'],
+    [/^Choose a sales channel\.$/, 'กรุณาเลือกช่องทางการขาย'],
+    [/^Too many dishes in one update \(max (\d+)\)\.$/, 'อัปเดตได้ครั้งละไม่เกิน $1 เมนู'],
     [/^A by-product can't be the item being produced\.$/, 'ผลพลอยได้ต้องไม่ใช่รายการที่กำลังผลิต'],
     [/^Production entries are removed by voiding the production run\.$/, 'รายการผลิตต้องยกเลิกที่การผลิตนั้น'],
     [/^Line (\d+): ([\s\S]+) is made in the kitchen\. Record a production run instead\.$/, function (m) {
@@ -386,6 +403,7 @@ var RestoCore = (function () {
 
     /* ---------- reads ---------- */
 
+    var writeDepth = 0;   // > 0 while a write action runs inside db.lock
     function settings() {
       var out = {};
       for (var k in DEFAULT_SETTINGS) out[k] = DEFAULT_SETTINGS[k];
@@ -543,6 +561,11 @@ var RestoCore = (function () {
       try { costs = RestoCosting.prepCosts(book); } catch (e) { costs = {}; }
       var recipes = {};
       db.read('Recipes').forEach(function (r) { (recipes[r.menuItemId] = recipes[r.menuItemId] || []).push(r); });
+      var prices = {};
+      db.read('MenuPrices').forEach(function (r) {
+        if (trim(r.price) === '') return;
+        (prices[r.menuItemId] = prices[r.menuItemId] || {})[r.channelId] = num(r.price);
+      });
       return db.read('Menu').map(function (m) {
         var total = 0;
         var lines = (recipes[m.id] || []).map(function (r) {
@@ -564,7 +587,7 @@ var RestoCore = (function () {
         var price = num(m.price);
         return {
           id: m.id, name: m.name, category: m.category, price: price, active: bool(m.active),
-          version: num(m.version), recipe: lines, foodCost: cost,
+          version: num(m.version), recipe: lines, foodCost: cost, prices: prices[m.id] || {},
           foodCostPct: price > 0 ? round(cost / price * 100, 1) : null,
           margin: round(price - cost, 2)
         };
@@ -690,6 +713,7 @@ var RestoCore = (function () {
             leadTimeDays: trim(s.leadTimeDays) === '' ? null : num(s.leadTimeDays), paymentTermsDays: num(s.paymentTermsDays) };
         }).sort(function (a, b) { return a.name.localeCompare(b.name); }),
         menu: menuWithCost(),
+        channels: ensureChannels(user),
         users: isOwner ? db.read('Users').map(publicUser) : [],
         // Active people only (for "made by" pickers); every role gets it, with no account details.
         team: active(db.read('Users')).map(function (u) {
@@ -984,6 +1008,71 @@ var RestoCore = (function () {
       });
     } };
 
+    /* Sales channels */
+    function guessChannelType(name) {
+      var n = trim(name).toLowerCase();
+      if (/dine|ทาน|ร้าน/.test(n)) return 'dineIn';
+      if (/take|กลับ|to go/.test(n)) return 'takeaway';
+      if (/deliver|เดลิ|grab|line ?man|panda|shopee|robinhood|uber|doordash|deliveroo|just ?eat/.test(n)) return 'delivery';
+      return 'other';
+    }
+    function channelRows() {
+      return db.read('Channels').map(function (c) {
+        return { id: c.id, name: trim(c.name), type: CHANNEL_TYPES.indexOf(c.type) >= 0 ? c.type : 'other',
+          commissionPct: num(c.commissionPct), packagingCost: num(c.packagingCost),
+          commissionOnDiscounted: trim(c.commissionOnDiscounted) === '' ? true : bool(c.commissionOnDiscounted),
+          active: bool(c.active), sortOrder: num(c.sortOrder), version: num(c.version) };
+      }).sort(function (a, b) { return a.sortOrder - b.sortOrder || a.name.localeCompare(b.name); });
+    }
+    /** Channels as records; the first call turns the old comma-separated list into rows. */
+    function ensureChannels(user) {
+      if (db.read('Channels').length) return channelRows();
+      // Inside a write we already hold the lock; taking it again would deadlock or release it early.
+      (writeDepth ? function (fn) { return fn(); } : db.lock)(function () {
+        if (db.read('Channels').length) return;
+        var ts = nowIso();
+        db.append('Channels', list(settings().salesChannels).map(function (name, i) {
+          return { id: newId('CHN'), name: name, type: guessChannelType(name), commissionPct: 0, packagingCost: 0,
+            commissionOnDiscounted: true, active: true, sortOrder: i, createdAt: ts, updatedAt: ts,
+            updatedBy: (user && user.username) || 'system', version: 1 };
+        }));
+      });
+      return channelRows();
+    }
+    /** The channel a sale belongs to: by id, else by name (older rows store only the name), else null. */
+    function resolveChannel(sale, channels) {
+      var id = trim(sale.channelId), i;
+      if (id) for (i = 0; i < channels.length; i++) if (channels[i].id === id) return channels[i];
+      var name = trim(sale.channel).toLowerCase();
+      if (name) for (i = 0; i < channels.length; i++) if (channels[i].name.toLowerCase() === name) return channels[i];
+      return null;
+    }
+
+    A['channels.save'] = { role: 'manager', write: true, fn: function (p, user) {
+      ensureChannels(user);
+      var d = p.item || {};
+      var type = trim(d.type);
+      if (CHANNEL_TYPES.indexOf(type) < 0) fail('VALIDATION', 'Unknown channel type.');
+      var c = reqNum(d.commissionPct === '' || d.commissionPct === undefined ? 0 : d.commissionPct, 'Commission %');
+      if (c < 0 || c > 99.9) fail('VALIDATION', 'Commission must be between 0 and 99.9 %.');
+      var data = { id: trim(d.id), version: d.version, name: reqStr(d.name, 'Name', 40), type: type, commissionPct: round(c, 2),
+        packagingCost: round(reqNum(d.packagingCost === '' || d.packagingCost === undefined ? 0 : d.packagingCost, 'Packaging cost', { min: 0 }), 2),
+        commissionOnDiscounted: d.commissionOnDiscounted === undefined ? true : bool(d.commissionOnDiscounted),
+        active: d.active === undefined ? true : bool(d.active) };
+      if (d.sortOrder !== undefined && d.sortOrder !== '') data.sortOrder = num(d.sortOrder);
+      if (data.active) assertUnique('Channels', 'name', data.name, data.id, 'Sales channel');
+      if (!data.active) {
+        var others = channelRows().filter(function (x) { return x.active && x.id !== data.id; });
+        if (!others.length) fail('VALIDATION', 'Keep at least one active sales channel.');
+      }
+      if (!data.id) {
+        delete data.id;
+        if (data.sortOrder === undefined) data.sortOrder = channelRows().length;
+      }
+      var saved = saveRow('Channels', 'CHN', data, user, 'Sales channel "' + data.name + '"');
+      return channelRows().filter(function (x) { return x.id === saved.id; })[0];
+    } };
+
     A['suppliers.save'] = { role: 'manager', write: true, fn: function (p, user) {
       var d = p.item || {};
       var data = { id: trim(d.id), version: d.version, name: reqStr(d.name, 'Supplier name', 80),
@@ -1018,8 +1107,26 @@ var RestoCore = (function () {
         var r = RestoCosting.lineCost({ ingredientId: l.ingredientId, qty: l.qty, unit: l.unit || ing.unit, yieldPct: l.yieldPct }, cbook, {});
         if (r.error === 'unit') fail('VALIDATION', "Can't convert " + (l.unit || ing.unit) + ' to ' + ing.unit + ' for ' + ing.name + '. Add a conversion on the ingredient.');
       });
+      var priceRows = null, sentChannels = {};
+      if (p.prices !== undefined) {
+        ensureChannels(user);
+        priceRows = [];
+        (p.prices || []).forEach(function (x) {
+          findOrFail('Channels', trim(x.channelId), 'Sales channel');
+          sentChannels[trim(x.channelId)] = true;
+          if (trim(x.price) === '') return;
+          priceRows.push({ channelId: trim(x.channelId), price: round(reqNum(x.price, data.name + ' price', { min: 0 }), 2) });
+        });
+      }
       if (!data.id) delete data.id;
       var saved = saveRow('Menu', 'MENU', data, user, 'Dish "' + data.name + '"');
+      if (priceRows) {
+        // Only the channels the editor sent are replaced; prices on channels it didn't show (turned off) stay.
+        db.removeWhere('MenuPrices', function (r) { return r.menuItemId === saved.id && sentChannels[r.channelId]; });
+        if (priceRows.length) db.append('MenuPrices', priceRows.map(function (x) {
+          return { id: newId('MPR'), menuItemId: saved.id, channelId: x.channelId, price: x.price };
+        }));
+      }
       db.removeWhere('Recipes', function (r) { return r.menuItemId === saved.id; });
       if (recipe.length) {
         db.append('Recipes', recipe.map(function (l) {
@@ -1029,10 +1136,38 @@ var RestoCore = (function () {
       return menuWithCost().filter(function (m) { return m.id === saved.id; })[0];
     } };
 
+    A['menu.applyPrices'] = { role: 'manager', write: true, fn: function (p, user) {
+      ensureChannels(user);
+      var channel = findOrFail('Channels', trim(p.channelId), 'Sales channel');
+      var items = p.items || [];
+      if (items.length > 200) fail('VALIDATION', 'Too many dishes in one update (max 200).');
+      var menu = byId(db.read('Menu'));
+      var rows = items.map(function (x, i) {
+        var dish = menu[x.menuItemId];
+        if (!dish) fail('VALIDATION', 'Line ' + (i + 1) + ': dish not found.');
+        return { menuItemId: dish.id, price: round(reqNum(x.price, dish.name + ' price', { positive: true }), 2) };
+      });
+      rows.forEach(function (r) {
+        var n = db.updateWhere('MenuPrices', function (x) { return x.menuItemId === r.menuItemId && x.channelId === channel.id; }, { price: r.price });
+        if (!n) db.append('MenuPrices', [{ id: newId('MPR'), menuItemId: r.menuItemId, channelId: channel.id, price: r.price }]);
+      });
+      return { count: rows.length };
+    } };
+
     /* Sales */
+    function listPriceFor(dish, channelId) {
+      return dish.prices && dish.prices[channelId] !== undefined ? dish.prices[channelId] : dish.price;
+    }
+
     A['sales.add'] = { role: 'staff', write: true, fn: function (p, user) {
       var date = reqDate(p.date);
-      var channel = optStr(p.channel, 40);
+      var channels = ensureChannels(user);
+      var ch = trim(p.channelId) ? resolveChannel({ channelId: p.channelId }, channels)
+        : trim(p.channel) ? resolveChannel({ channel: p.channel }, channels)
+          : channels.filter(function (c) { return c.active; })[0];
+      if (!ch) fail('VALIDATION', 'Choose a sales channel.');
+      if (!ch.active) fail('VALIDATION', 'This sales channel is turned off.');
+      var channel = ch.name;
       var lines = (p.lines || []).filter(function (l) { return num(l.qty) !== 0; });
       if (!lines.length) fail('VALIDATION', 'Enter a quantity for at least one dish.');
       var menu = byId(menuWithCost());
@@ -1045,10 +1180,14 @@ var RestoCore = (function () {
         if (!item) fail('VALIDATION', 'Line ' + (i + 1) + ': dish not found.');
         var qty = reqNum(l.qty, item.name + ' quantity', { positive: true });
         if (Math.round(qty) !== qty) fail('VALIDATION', item.name + ': quantity must be a whole number.');
-        var price = l.unitPrice === undefined || l.unitPrice === '' ? item.price : reqNum(l.unitPrice, item.name + ' price', { min: 0 });
+        var listPrice = listPriceFor(item, ch.id);
+        var price = l.unitPrice === undefined || l.unitPrice === '' ? listPrice : reqNum(l.unitPrice, item.name + ' price', { min: 0 });
+        var base = ch.commissionOnDiscounted ? price : listPrice;
         var sale = { id: newId('SAL'), date: date, menuItemId: item.id, itemName: item.name, qty: qty, unitPrice: round(price),
           total: round(qty * price), unitCost: item.foodCost, costTotal: round(qty * item.foodCost), channel: channel,
-          note: optStr(l.note, 200), voided: false, createdAt: ts, createdBy: user.username };
+          note: optStr(l.note, 200), voided: false, createdAt: ts, createdBy: user.username,
+          channelId: ch.id, commission: round(ch.commissionPct / 100 * base * qty), promoId: '', listPrice: round(listPrice),
+          discount: 0, platformDiscount: 0 };
         sales.push(sale);
         if (!item.recipe.length) noRecipe.push(item.name);
         // Each dish sold deducts its recipe ingredients from stock.
@@ -1075,10 +1214,12 @@ var RestoCore = (function () {
         rows: rows.slice(0, num(p.limit) || 500).map(function (r) {
           return { id: r.id, date: r.date, menuItemId: r.menuItemId, itemName: r.itemName, qty: num(r.qty),
             unitPrice: num(r.unitPrice), total: num(r.total), costTotal: num(r.costTotal), channel: r.channel,
+            channelId: trim(r.channelId), commission: num(r.commission), listPrice: trim(r.listPrice) === '' ? num(r.unitPrice) : num(r.listPrice),
             note: r.note, voided: bool(r.voided), createdAt: r.createdAt, createdBy: r.createdBy };
         }),
         total: round(sum(liveRows, function (r) { return num(r.total); })),
         cost: round(sum(liveRows, function (r) { return num(r.costTotal); })),
+        commission: round(sum(liveRows, function (r) { return num(r.commission); })),
         dishes: sum(liveRows, function (r) { return num(r.qty); })
       };
     } };
@@ -1228,9 +1369,11 @@ var RestoCore = (function () {
       var loss = -sum(moves.filter(function (r) {
         return inRange(r.date, from, to) && (r.type === 'waste' || r.type === 'count' || r.type === 'adjustment');
       }), function (r) { return num(r.value); });
-      var gross = revenue - cogs;
+      // Delivery-app commission is a cost of selling: its own P&L line. Food cost % stays on the menu price.
+      var commissions = sum(s, function (r) { return num(r.commission); });
+      var gross = revenue - cogs - commissions;
       return {
-        revenue: round(revenue), cogs: round(cogs), wasteAndVariance: round(loss), expenses: round(exp),
+        revenue: round(revenue), cogs: round(cogs), commissions: round(commissions), wasteAndVariance: round(loss), expenses: round(exp),
         purchases: round(pur), grossProfit: round(gross), netProfit: round(gross - loss - exp),
         foodCostPct: revenue > 0 ? round((cogs + loss) / revenue * 100, 1) : null,
         theoreticalFoodCostPct: revenue > 0 ? round(cogs / revenue * 100, 1) : null,
@@ -1238,7 +1381,96 @@ var RestoCore = (function () {
       };
     }
 
-    A['reports.summary'] = { role: 'manager', write: false, fn: function (p) {
+    function dayCount(from, to) {
+      var a = Date.UTC(+from.slice(0, 4), +from.slice(5, 7) - 1, +from.slice(8, 10));
+      var b = Date.UTC(+to.slice(0, 4), +to.slice(5, 7) - 1, +to.slice(8, 10));
+      return Math.max(0, Math.round((b - a) / 86400000) + 1);
+    }
+    function priceRule() {
+      var st = settings();
+      return RestoPricing.effectiveRounding(st.priceRounding, st.currency);
+    }
+    /** Revenue, cost, commission and contribution margin per channel (older name-only rows resolved by name). */
+    function salesByChannel(rows, channels) {
+      var out = {};
+      rows.forEach(function (r) {
+        var ch = resolveChannel(r, channels);
+        var key = ch ? ch.id : '';
+        var b = out[key] = out[key] || { channelId: key, name: ch ? ch.name : 'Other', type: ch ? ch.type : 'other',
+          revenue: 0, cogs: 0, commission: 0, cm: 0, qty: 0 };
+        b.revenue += num(r.total); b.cogs += num(r.costTotal); b.commission += num(r.commission); b.qty += num(r.qty);
+      });
+      return Object.keys(out).map(function (k) {
+        var b = out[k];
+        return { channelId: b.channelId, name: b.name, type: b.type, revenue: round(b.revenue), cogs: round(b.cogs),
+          commission: round(b.commission), cm: round(b.revenue - b.cogs - b.commission), qty: b.qty };
+      }).sort(function (a, b) { return b.revenue - a.revenue; });
+    }
+    /** Dish × channel pairs sold in the last 28 days that miss the food-cost target after commission. */
+    function needsAttention(sales, channels, today) {
+      var st = settings();
+      var target = num(st.targetFoodCostPct) || 30;
+      var rule = priceRule();
+      var from = addDays(today, -27);
+      var qty = {};
+      sales.forEach(function (r) {
+        if (!inRange(r.date, from, today)) return;
+        var ch = resolveChannel(r, channels);
+        if (!ch) return;
+        var k = r.menuItemId + '|' + ch.id;
+        qty[k] = (qty[k] || 0) + num(r.qty);
+      });
+      var out = [];
+      menuWithCost().filter(function (m) { return m.active; }).forEach(function (m) {
+        channels.filter(function (c) { return c.active; }).forEach(function (c) {
+          var q = qty[m.id + '|' + c.id];
+          if (!q) return;
+          var price = listPriceFor(m, c.id);
+          var e = RestoPricing.channelEconomics({ price: price, foodCost: m.foodCost, packaging: c.packagingCost,
+            commissionPct: c.commissionPct, targetPct: target, rounding: rule });
+          if (e.meetsTarget || e.suggested === null || e.suggested <= price) return;
+          out.push({ menuItemId: m.id, name: m.name, channelId: c.id, channelName: c.name, price: price, suggested: e.suggested,
+            foodCostPctNet: e.foodCostPctNet, qty28: q, lostMargin: round((e.suggested - price) * q) });
+        });
+      });
+      return out.sort(function (a, b) { return b.lostMargin - a.lostMargin; }).slice(0, 3);
+    }
+
+    A['menu.analysis'] = { role: 'manager', write: false, fn: function (p, user) {
+      var from = reqDate(p.from, 'From'), to = reqDate(p.to, 'To');
+      var channels = ensureChannels(user);
+      var channelId = trim(p.channelId);
+      var target = num(settings().targetFoodCostPct) || 30;
+      var rows = live(db.read('Sales')).filter(function (r) {
+        if (!inRange(r.date, from, to)) return false;
+        if (!p.includePromo && trim(r.promoId)) return false;
+        if (channelId) { var ch = resolveChannel(r, channels); if (!ch || ch.id !== channelId) return false; }
+        return true;
+      });
+      var by = {};
+      rows.forEach(function (r) {
+        var b = by[r.menuItemId] = by[r.menuItemId] || { menuItemId: r.menuItemId, name: r.itemName, qty: 0, revenue: 0, cost: 0, commission: 0 };
+        b.qty += num(r.qty); b.revenue += num(r.total); b.cost += num(r.costTotal); b.commission += num(r.commission);
+      });
+      var dishes = Object.keys(by).map(function (k) { var b = by[k]; b.cm = b.revenue - b.cost - b.commission; return b; });
+      var me = RestoPricing.menuEngineering(dishes.map(function (b) { return { id: b.menuItemId, qty: b.qty, cm: b.cm }; }));
+      var cls = byId(me.items);
+      var order = { star: 0, plowhorse: 1, puzzle: 2, dog: 3 };
+      var items = dishes.filter(function (b) { return cls[b.menuItemId]; }).map(function (b) {
+        var c = cls[b.menuItemId];
+        var fc = b.revenue > 0 ? round(b.cost / b.revenue * 100, 1) : null;
+        return { menuItemId: b.menuItemId, name: b.name, qty: b.qty, revenue: round(b.revenue), cost: round(b.cost),
+          commission: round(b.commission), cm: round(b.cm), cmPerDish: c.cmPerDish, mixPct: c.mixPct, popular: c.popular,
+          highMargin: c.highMargin, cls: c.cls, foodCostPct: fc, overTarget: fc !== null && fc > target };
+      }).sort(function (a, b) { return order[a.cls] - order[b.cls] || b.revenue - a.revenue; });
+      var sold = sum(dishes, function (b) { return b.qty; });
+      var days = dayCount(from, to);
+      return { from: from, to: to, days: days, channelId: channelId, dishesSold: sold, threshold: me.threshold, avgCm: me.avgCm,
+        indicative: sold < 5 || days < 14, items: items };
+    } };
+
+    A['reports.summary'] = { role: 'manager', write: false, fn: function (p, user) {
+      var channels = ensureChannels(user);
       var month = reqMonth(p.month);
       var from = month + '-01', to = monthEnd(month);
       var today = p.today ? reqDate(p.today, 'Today') : env.now().toISOString().slice(0, 10);
@@ -1306,6 +1538,8 @@ var RestoCore = (function () {
         totals: totals, previous: previous,
         todaySales: { total: round(sum(todaySales, function (r) { return num(r.total); })), dishes: sum(todaySales, function (r) { return num(r.qty); }) },
         topItems: topByQty, items: items,
+        byChannel: salesByChannel(sales.filter(function (r) { return inRange(r.date, from, to); }), channels),
+        attention: needsAttention(sales, channels, today),
         cashFlow: days, expenseCategories: expenseCategories, trend: trend,
         stockValue: round(sum(stock, function (s) { return Math.max(0, s.value); })),
         lowStock: stock.filter(function (s) { return s.status !== 'ok'; }).length,
@@ -1809,6 +2043,7 @@ var RestoCore = (function () {
         if (k === 'vatRate') v = String(reqNum(v, 'VAT rate', { min: 0 }));
         if (k === 'priceTolerancePct') v = String(reqNum(v, 'Price tolerance %', { min: 0 }));
         if (k === 'costMethod' && ['average', 'last'].indexOf(v) < 0) fail('VALIDATION', 'Unknown cost method.');
+        if (k === 'priceRounding' && v !== '' && RestoPricing.ROUNDING_RULES.indexOf(v) < 0) fail('VALIDATION', 'Unknown price rounding.');
         if (existing[k]) db.updateWhere('Settings', function (r) { return r.key === k; }, { value: v, updatedAt: ts, updatedBy: user.username });
         else db.append('Settings', [{ key: k, value: v, updatedAt: ts, updatedBy: user.username }]);
       });
@@ -1833,7 +2068,10 @@ var RestoCore = (function () {
         return result;
       };
       // All writes are serialized: no two requests can interleave read-modify-write.
-      return def.write ? db.lock(run) : run();
+      return def.write ? db.lock(function () {
+        writeDepth++;
+        try { return run(); } finally { writeDepth--; }
+      }) : run();
     }
 
     function handle(req) {

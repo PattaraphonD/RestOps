@@ -7,6 +7,7 @@ import {
 import { list, signOut, langSwitch, wireLangSwitch } from '../app.js';
 import { t, getLang, defaults } from '../i18n.js';
 import { renderLog as production } from './production.js';
+import { renderChannels as channels } from './channels.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -14,7 +15,7 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team, settings, account, production };
+  const pages = { expenses, suppliers, team, settings, account, production, channels };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -37,6 +38,7 @@ function index({ el, setTitle, state, can }) {
       <div class="card"><ul class="list">
         ${item('#/more/suppliers', 'truck', t('more.suppliers'), t('more.nActive', { n: state.boot.suppliers.filter((s) => s.active).length }))}
         ${item('#/stock', 'box', t('more.ingredients'), t('more.ingredientsSub'))}
+        ${item('#/more/channels', 'truck', t('channels.title'), t('more.nChannels', { n: (state.boot.channels || []).filter((c) => c.active).length }))}
         ${can('owner') ? item('#/more/team', 'users', t('more.team'), t('more.nActiveUsers', { n: state.boot.users.filter((x) => x.active).length })) : ''}
         ${can('owner') ? item('#/more/settings', 'settings', t('more.settings'), t('more.settingsSub')) : ''}
       </ul></div></section>` : ''}
@@ -304,7 +306,9 @@ function settings(ctx) {
   setTitle(t('more.settings'), { back: true });
   if (!can('owner')) { mount(el, emptyState('settings', t('more.ownersOnly'), t('settings.ownersOnlyText'))); return; }
   const s = state.boot.settings;
-  const LISTS = ['salesChannels', 'expenseCategories', 'ingredientCategories', 'menuCategories', 'units'];
+  const LISTS = ['expenseCategories', 'ingredientCategories', 'menuCategories', 'units'];
+  const autoRule = window.RestoPricing.effectiveRounding('', s.currency);
+  const ROUNDING = ['', 'none', '1', '5', '10', '0.99', '9-ending'];
   const text = (name, hint) => html`<label class="field"><span class="label">${t(`settings.${name}`)}</span>
     <input class="input" name="${name}" value="${s[name]}">${hint ? html`<span class="hint">${hint}</span>` : ''}</label>`;
   mount(el, html`<form id="f" class="card pad" style="margin-top:4px" novalidate>
@@ -319,7 +323,11 @@ function settings(ctx) {
         <label class="field"><span class="label">${t('settings.priceTolerancePct')}</span><input class="input" name="priceTolerancePct" type="number" inputmode="decimal" min="0" step="any" value="${s.priceTolerancePct}"></label>
       </div>
       <p class="small muted" style="margin:-6px 2px 14px">${t('settings.purchasingHelp')}</p>
+      <label class="field"><span class="label">${t('settings.priceRounding')}</span><select class="select" name="priceRounding">${options(ROUNDING.map((r) => ({
+        value: r, label: r ? t(`settings.rounding.${r}`) : t('settings.rounding.auto', { rule: t(`settings.rounding.${autoRule}`) }) })), s.priceRounding || '')}</select>
+        <span class="hint">${t('settings.roundingHelp')}</span></label>
       ${LISTS.map((n) => text(n, t('settings.commaHint')))}
+      <p class="small muted" style="margin:-6px 2px 14px">${t('settings.channelsMoved')}</p>
       <button class="btn sm" type="button" id="defaults" style="margin:-4px 0 18px">${icon('refresh')}${t('settings.useDefaults')}</button>
       <button class="btn primary block" id="save" type="button">${t('settings.save')}</button>
     </form>`);

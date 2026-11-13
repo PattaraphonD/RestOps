@@ -88,7 +88,9 @@ export async function render(ctx) {
   const foodCls = tot.foodCostPct === null ? '' : tot.foodCostPct <= target ? 'good' : tot.foodCostPct <= target + 5 ? 'warn' : 'bad';
   const cashIn = r.cashFlow.reduce((a, d) => a + d.cashIn, 0);
   const cashOut = r.cashFlow.reduce((a, d) => a + d.cashOut, 0);
-  const grossAfterFood = tot.revenue - tot.cogs - tot.wasteAndVariance;
+  const grossAfterFood = tot.revenue - tot.cogs - (tot.commissions || 0) - tot.wasteAndVariance;
+  const byChannel = r.byChannel || [];
+  const showChannels = byChannel.length > 1 || byChannel.some((c) => c.commission);
   const vsSuffix = p.partial
     ? t('home.vsSameDays', { month: fmtDate(p.to.slice(0, 7) + '-01', { month: 'short' }), day: Number(p.to.slice(8)) })
     : t('home.vsLastMonth');
@@ -113,6 +115,15 @@ export async function render(ctx) {
     </div>
     ${lowStockAlert(boot)}
     ${isCurrent ? purchasingAlerts(r.purchasing, r.payables, true) : ''}
+    ${(r.attention || []).length ? html`<section class="section">
+      <div class="section-head"><h2>${icon('alert')} ${t('home.attention')}</h2><a class="link" href="#/menu/pricing">${t('menu.tabPricing')}</a></div>
+      <p class="small muted" style="margin:-4px 4px 8px">${t('home.attentionHelp')}</p>
+      <div class="card"><ul class="list">${r.attention.map((a) => html`<li><a class="row" href="#/menu/pricing/${a.channelId}">
+        <span class="avatar bad">${icon('alert')}</span>
+        <span class="grow"><div class="title">${a.name}</div>
+          <div class="sub">${t('home.attentionRow', { pct: pct(a.foodCostPctNet), channel: a.channelName, price: money(a.suggested, { cents: false }) })}</div></span>
+        <span class="value sub">${t('home.attentionLost', { amount: money(a.lostMargin, { cents: false }) })}</span>${icon('chevR', 'chev')}</a></li>`)}</ul></div>
+    </section>` : ''}
     <div class="section">${quickActions(true)}</div>
 
     <section class="section">
@@ -132,12 +143,18 @@ export async function render(ctx) {
       <div class="card pad">${r.topItems.length ? html`<div id="top"></div>` : emptyState('receipt', t('home.noSalesMonthTitle'), t('home.noSalesMonthText'))}</div>
     </section>
 
+    ${showChannels ? html`<section class="section">
+      <div class="section-head"><h2>${t('home.byChannel')}</h2><a class="link" href="#/menu/analysis">${t('menu.tabAnalysis')}</a></div>
+      <div class="card pad"><div id="bych"></div></div>
+    </section>` : ''}
+
     <section class="section">
       <div class="section-head"><h2>${t('home.pl')}</h2><span class="small muted">${fmtMonth(month)}</span></div>
       <div class="card">
         <div class="pl-row"><span>${t('home.revenue')}</span><b>${money(tot.revenue)}</b></div>
         <div class="pl-row indent"><span>${t('home.foodCostRecipes')}</span><span>−${money(tot.cogs)}</span></div>
         <div class="pl-row indent"><span>${t('home.wasteVariance')}</span><span>${tot.wasteAndVariance >= 0 ? '−' : '+'}${money(Math.abs(tot.wasteAndVariance))}</span></div>
+        ${tot.commissions ? html`<div class="pl-row indent"><span>${t('home.commissions')}</span><span>−${money(tot.commissions)}</span></div>` : ''}
         <div class="pl-row total"><span>${t('home.grossProfit')}</span><span>${money(grossAfterFood)}</span></div>
         ${r.expenseCategories.map((c) => html`<div class="pl-row indent"><span>${c.category}</span><span>−${money(c.amount)}</span></div>`)}
         ${r.expenseCategories.length ? '' : html`<div class="pl-row indent"><span>${t('home.opex')}</span><span>${money(0)}</span></div>`}
@@ -162,6 +179,13 @@ export async function render(ctx) {
 
   const cf = $('#cf');
   if (cf) cashFlowChart(cf, r.cashFlow);
+  const bych = $('#bych');
+  if (bych) {
+    barList(bych, byChannel.map((c) => ({
+      label: c.channelId ? c.name : t('common.other'), value: Math.max(0, c.revenue), valueLabel: money(c.revenue, { cents: false }),
+      detail: t('home.channelDetail', { cm: money(c.cm, { cents: false }), commission: money(c.commission, { cents: false }) }),
+    })));
+  }
   const top = $('#top');
   if (top) {
     barList(top, r.topItems.slice(0, 8).map((i) => ({

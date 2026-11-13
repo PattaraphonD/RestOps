@@ -1,7 +1,7 @@
 # Restaurant Ops: Developer Handover
 
-**Version:** 1.3.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
-**Status (2026-11-13):** feature-complete v1. **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
+**Version:** 1.4.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
+**Status (2026-11-14):** feature-complete v1. **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. **Layer 2 (v1.4) — channel pricing and menu analysis:** sales channels as records with commission and packaging, a price per channel, commission on every sale and in the P&L, suggested prices, menu engineering and a Needs attention card. Layer 2 screens were checked by script in demo mode in English and Thai; their phone-width layout still needs a visual check. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
 
 This document is for the developer taking over the project. For end-user setup, see [README.md](../README.md).
 
@@ -56,7 +56,7 @@ A phone app for a restaurant's back office:
 
 ```
 app/                         ← deployable PWA (Vercel Root Directory = this folder)
-  index.html                 shell; loads config.js, costing.js, core.js, then js/app.js (module)
+  index.html                 shell; loads config.js, costing.js, pricing.js, core.js, then js/app.js (module)
   config.js                  RESTO_CONFIG.apiUrl, the Apps Script /exec URL (optional)
   manifest.webmanifest       PWA manifest
   sw.js                      service worker: network-first, offline fallback to cache
@@ -66,6 +66,7 @@ app/                         ← deployable PWA (Vercel Root Directory = this fo
   icons/                     PNG + SVG icons (regenerate: tools/make_icons.py)
   js/core.js                 ★ ALL business rules + schema (shared with server)
   js/costing.js              pure costing maths: units, conversion, yield, prep costs, explode, run cost (shared with server)
+  js/pricing.js              pure pricing maths: price rounding, channel economics, menu engineering (shared with server)
   js/api.js                  API client: remote (fetch) or demo transport; session storage
   js/demo.js                 demo backend (core.js + localStorage) and sample-data seeder
   js/i18n.js                 English + Thai dictionaries, default lists, t(), locale()
@@ -84,10 +85,11 @@ backend/                     ← Google Apps Script project
   Server.gs                  doPost/doGet, Sheets storage, locks, sessions, setup()
   Core.gs                    GENERATED copy of app/js/core.js
   Costing.gs                 GENERATED copy of app/js/costing.js
+  Pricing.gs                 GENERATED copy of app/js/pricing.js
   appsscript.json            manifest (timezone Asia/Bangkok, V8, web app settings)
 tools/
   serve.py                   local preview server (http://localhost:5173)
-  build_backend.py           core.js → backend/Core.gs, costing.js → backend/Costing.gs
+  build_backend.py           core.js → Core.gs, costing.js → Costing.gs, pricing.js → Pricing.gs (in backend/)
   test_core.js               test runner for core.js + costing.js (node tools/test_core.js)
   tests/*.test.js            the tests, against an in-memory db
   check_i18n.py              fails if any text key is missing in EN or TH
@@ -118,14 +120,16 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | **StockMovements** | id, date, ingredientId, type, qty, unitCost, value, reason, refId, voided, createdAt, createdBy | Everything except purchases |
 | **Menu** | id, name, category, price, active, createdAt, updatedAt, updatedBy, version | |
 | **Recipes** | id, menuItemId, ingredientId, qty, note, unit, yieldPct | Replaced as a whole on each `menu.save`. `qty` is the net (usable) amount. Blank unit = the ingredient's unit; blank yield = the ingredient's yield |
-| **Sales** | id, date, menuItemId, itemName, qty, unitPrice, total, unitCost, costTotal, channel, note, voided, createdAt, createdBy | `unitCost` is a **snapshot** of the dish cost at the time of sale |
+| **Sales** | id, date, menuItemId, itemName, qty, unitPrice, total, unitCost, costTotal, channel, note, voided, createdAt, createdBy, channelId, commission, promoId, listPrice, discount, platformDiscount | `unitCost` is a **snapshot** of the dish cost at the time of sale. `unitPrice`/`total` = what the restaurant is credited before commission. `commission` is a snapshot. `promoId`/`discount`/`platformDiscount` are for promotions (Layer 3; 0 / blank until then). Older rows have only `channel` (a name) |
+| **Channels** | id, name, type, commissionPct, packagingCost, commissionOnDiscounted, active, sortOrder, createdAt, updatedAt, updatedBy, version | type: dineIn / takeaway / delivery / other. Created from the old `salesChannels` setting on first use |
+| **MenuPrices** | id, menuItemId, channelId, price | A dish's price on one channel; no row = the dish's own price |
 | **Expenses** | id, date, category, description, amount, paymentMethod, note, voided, createdAt, createdBy | |
 | **PurchaseOrders** | id, poNumber, supplierId, status, orderDate, expectedDate, note, total, sentAt, sentBy, closedAt, closedBy, closeReason, createdAt, createdBy, updatedAt, updatedBy, version | status: draft → sent → partial → received; or closed (short) / cancelled |
 | **PurchaseOrderLines** | id, poId, ingredientId, qtyOrdered, unitPrice, note | Replaced as a whole while the PO is a draft |
 | **SupplierInvoices** | id, invoiceNo, supplierId, poId, invoiceDate, dueDate, subtotal, vat, total, status, exceptionCount, varianceAmount, reviewNote, reviewedAt, reviewedBy, paidAt, paidBy, paymentMethod, paymentRef, note, createdAt, createdBy, updatedAt, updatedBy, version | status: matched / exception / noPo → approved / disputed → paid |
 | **SupplierInvoiceLines** | id, invoiceId, ingredientId, qty, unitPrice, total | |
 
-**Columns added in v1.2 (appended, so old sheets upgrade in place):** Suppliers `leadTimeDays`, `paymentTermsDays`; Ingredients `parLevel`; Purchases `poId`, `poLineId`. **Added in v1.3:** Ingredients `yieldPct`, `kind`, `batchQty`, `trackStock`, `shelfLifeDays`; Recipes `unit`, `yieldPct`; new tabs IngredientUnits, PrepRecipes, CostChanges, ProductionRuns. `Server.gs` → `prepareTab_()` adds missing tabs and columns automatically on first use (and in `setup()`). It refuses to touch a tab whose existing headers differ.
+**Columns added in v1.2 (appended, so old sheets upgrade in place):** Suppliers `leadTimeDays`, `paymentTermsDays`; Ingredients `parLevel`; Purchases `poId`, `poLineId`. **Added in v1.3:** Ingredients `yieldPct`, `kind`, `batchQty`, `trackStock`, `shelfLifeDays`; Recipes `unit`, `yieldPct`; new tabs IngredientUnits, PrepRecipes, CostChanges, ProductionRuns. **Added in v1.4:** Sales `channelId`, `commission`, `promoId`, `listPrice`, `discount`, `platformDiscount`; new tabs Channels, MenuPrices. `Server.gs` → `prepareTab_()` adds missing tabs and columns automatically on first use (and in `setup()`). It refuses to touch a tab whose existing headers differ.
 
 **Quantity received is never stored on the PO.** It is always the sum of non-voided `Purchases` rows with that `poLineId`. Voiding a receipt re-opens the order (`refreshPoStatus`).
 
@@ -143,12 +147,12 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | `byproduct` | positive | something useful left over (e.g. chicken fat from stock), valued at its cost |
 
 **Conventions**
-- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN).
+- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN, CHN, MPR).
 - Units in recipe, prep and conversion lines are stored as a unit code (`g`, `kg`, `ml`, `l`, `pcs` …) when the text is a known unit or alias, otherwise as typed. An ingredient's own stock unit is stored as typed (`กก.` in Thai).
 - Dates are `YYYY-MM-DD` text; timestamps are ISO-8601 text. `TEXT_COLUMNS` are formatted as plain text by `setup()` so Sheets doesn't convert them. `Server.gs` also converts any `Date` cells back on read.
 - Booleans are `TRUE`/`FALSE`. Read them with `bool()` in core.
 
-**Settings keys:** `restaurantName`, `currency` (ISO code, default THB), `costMethod` (`average` | `last`), `targetFoodCostPct` (default 30), `salesChannels`, `expenseCategories`, `ingredientCategories`, `menuCategories`, `units` (comma-separated lists), and `locale` (legacy, unused; formatting now follows the app language).
+**Settings keys:** `restaurantName`, `currency` (ISO code, default THB), `costMethod` (`average` | `last`), `targetFoodCostPct` (default 30), `priceRounding` (blank = by currency, or `none | 1 | 5 | 10 | 0.99 | 9-ending`), `salesChannels` (only read once, to create the Channels rows), `expenseCategories`, `ingredientCategories`, `menuCategories`, `units` (comma-separated lists), and `locale` (legacy, unused; formatting now follows the app language).
 
 > Staff may look at the spreadsheet, but **editing rows by hand bypasses validation, locking and versioning**. Treat the sheet as read-only, except for emergency fixes by a developer.
 
@@ -189,12 +193,23 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 - **Production run** (`runCost`): inputs default to recipe × batches (gross, converted), or what the cook entered. inputCost = Σ input qty × current cost; by-products are credited at their current cost; totalCost = inputCost − by-product value (not below 0); unitCost = totalCost ÷ producedQty; yieldPct = produced ÷ (batchQty × batches). Inputs that go below zero give a warning, not a block. Voiding a run voids all its movements; it does not roll back weighted-average costs.
 - **Actual vs recipe:** the prep screen shows the mean unit cost of the last 5 runs next to the recipe cost.
 - **Cost impact:** `purchases.add` and `po.receive` return which ingredients moved by 1 % or more and which active dishes now cost more or less, including dishes that use them through a prep.
+**Channel pricing and analysis (v1.4, maths in `pricing.js`)**
+
+- **Channels** are records. The first `bootstrap` (or any channel-aware action) turns the old comma-separated `salesChannels` setting into rows, guessing the type from the name. An older sale that stored only a channel name is matched to a channel by name when reports read it (`resolveChannel`); it is never rewritten.
+- **Price on a channel** = the `MenuPrices` row, else the dish's own price. Sales entry uses it automatically.
+- **Commission on a sale** = commissionPct × base × qty, where base = the price received if `commissionOnDiscounted`, else the list price. Stored on the row, so later rate changes don't alter history.
+- **Channel economics** (`channelEconomics`): net revenue = price × (1 − commission %); margin (CM) = net − food cost − packaging; food cost % of net = food cost ÷ net. **Suggested price** = (food cost + packaging) ÷ (target % × (1 − commission %)), rounded **up** by `priceRounding` (auto: THB → 5; JPY/KRW/VND/IDR → 10; others → .99). Null when commission ≥ 100 %, target ≤ 0 or there is no food cost.
+- **Food cost % stays on the menu price** in Menu, reports and the dashboard. Delivery profitability is shown as margin after commission.
+- **Menu engineering** (`menuEngineering`, `menu.analysis`): per dish, CM = revenue − food cost − commission. Popular when menu mix % ≥ 70 % × (1 ÷ dishes sold); high margin when CM per dish ≥ the sales-weighted average. Star / Plowhorse / Puzzle / Dog. Promotion sales (`promoId` set) are left out unless asked. `indicative` when fewer than 5 dishes sold or under 14 days.
+- **Needs attention** (`reports.summary.attention`): active dish × active channel pairs sold in the last 28 days that miss the target after commission; top 3 by (suggested − price) × qty.
 - **Reports (`reports.summary`)** for a month:
   - Revenue = Σ Sales.total
   - COGS = Σ Sales.costTotal (the snapshot)
+  - Channel commissions = Σ Sales.commission
   - Waste & variance = −Σ value of `waste`, `count`, `adjustment` movements
-  - Gross profit (shown) = Revenue − COGS − Waste & variance
+  - Gross profit (shown) = Revenue − COGS − Channel commissions − Waste & variance
   - Net profit = Gross − Expenses
+  - Revenue, cost, commission and margin **by channel** (`byChannel`)
   - Food cost % = (COGS + Waste & variance) / Revenue
   - Purchases are **not** a P&L cost (they're inventory). They appear in **cash flow** only: money out = purchases + expenses.
   - Month-to-date is compared with **the same days of the previous month**.
@@ -222,11 +237,14 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 | `ingredients.save` | manager | ✓ | item {id?, version?, name, unit, category, costPerUnit, minLevel, parLevel, supplierId, active, yieldPct, kind, batchQty, trackStock, shelfLifeDays}, units[{unit, factor}] (1 unit = factor × stock unit), prepRecipe[{ingredientId, qty, unit, yieldPct, note}] (preps only; cost is computed) |
 | `ingredients.costHistory` | manager | | id, limit? → [{date, oldCost, newCost, changePct, source, refId}], newest first |
 | `suppliers.save` | manager | ✓ | item {id?, version?, name, contactName, phone, email, notes, active} |
-| `menu.save` | manager | ✓ | item {id?, version?, name, price, category, active}, recipe[{ingredientId, qty (net), unit, yieldPct}] |
+| `menu.save` | manager | ✓ | item {id?, version?, name, price, category, active}, recipe[{ingredientId, qty (net), unit, yieldPct}], prices?[{channelId, price}] (replaced only when sent; blank price removes it) |
+| `menu.applyPrices` | manager | ✓ | channelId, items[{menuItemId, price}] (max 200) → {count} |
+| `menu.analysis` | manager | | from, to, channelId?, includePromo? → menu-engineering classes per dish |
+| `channels.save` | manager | ✓ | item {id?, version?, name, type, commissionPct (0–99.9), packagingCost, commissionOnDiscounted, active, sortOrder}; the last active channel can't be turned off |
 | `production.add` | staff | ✓ | date, prepId, batches, producedQty, producedBy (username), note?, inputs?[{ingredientId, qty, unit}], byproducts?[{ingredientId, qty, unit}] → {run, warnings} |
 | `production.list` | staff | | from?, to?, prepId?, limit? |
 | `production.void` | manager | ✓ | id (also voids its movements) |
-| `sales.add` | staff | ✓ | date, channel, lines[{menuItemId, qty, unitPrice?}] → also writes `sale` movements |
+| `sales.add` | staff | ✓ | date, channelId (or legacy channel name), lines[{menuItemId, qty, unitPrice?}] → stores channel price, listPrice and commission; also writes `sale` movements |
 | `sales.list` | staff | | from, to |
 | `sales.void` | manager | ✓ | id (also voids its movements) |
 | `expenses.add` / `.list` / `.void` | manager | ✓ / – / ✓ | date, category, amount, description, paymentMethod, note |
@@ -239,7 +257,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 | `invoices.list` / `invoices.get` | manager | | status (review/unpaid/disputed/paid/all), today / id → rows + payables summary / invoice + match |
 | `invoices.approve` / `.dispute` | manager | ✓ | id, note (required for exceptions and disputes) |
 | `invoices.pay` | manager | ✓ | id, date, method, reference (matched/approved only) |
-| `reports.summary` | manager | | month (YYYY-MM), today |
+| `reports.summary` | manager | | month (YYYY-MM), today → totals (incl. commissions), byChannel, attention, … |
 | `users.save` | owner | ✓ | item {id?, version?, username, displayName, role, active, password?}; at least one active owner is enforced |
 | `settings.save` | owner | ✓ | values {key: value} |
 
@@ -253,7 +271,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 3. Add Thai translations of any new error messages to `TH_RULES` in `core.js`.
 4. Build the UI in `app/js/views/*`, and add text keys to **both** dictionaries in `i18n.js`.
 5. Add tests in `tools/tests/`, then run `node tools/test_core.js`, `python tools/build_backend.py` and `python tools/check_i18n.py`.
-6. Test in demo mode, then paste `Core.gs` and `Costing.gs` into Apps Script and deploy a new version.
+6. Test in demo mode, then paste `Core.gs`, `Costing.gs` and `Pricing.gs` into Apps Script and deploy a new version.
 
 ---
 
@@ -280,7 +298,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 - **Theme:** light, dark, or follow the system (`ro.theme` in localStorage).
 - **i18n:** `t(key, vars)` in `i18n.js`. Values are strings with `{var}` or functions (for English plurals). Thai mode formats with `th-TH` (Buddhist-era years). User data is stored exactly as typed. Server errors are translated in `core.js` (`translate()`).
 
-**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v2` (v1.3 changed the sample data, so old v1 demo data is ignored and the demo reseeds).
+**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v3` (v1.3 and v1.4 changed the sample data, so older demo data is ignored and the demo reseeds).
 
 ---
 

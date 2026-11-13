@@ -20,9 +20,12 @@ Try it now with no setup: open the app and tap **Explore with demo data**. It lo
 | **Recipe costing** | Each dish lists its ingredients per portion, in any unit that makes sense (grams of basil from a kilo bag, ml of fish sauce from a bottle). Trim loss is counted through each ingredient's yield. You see food cost, food cost %, margin, the share of each ingredient, and the price needed to hit your target %. Selling a dish deducts its ingredients from stock automatically. |
 | **Prep & production** | Sauces, stocks and pastes you make in the kitchen are **preps**: a recipe and a batch size, used in dishes like any ingredient. Their cost follows their ingredients. **Stock → Produce** records each batch: ingredients come out of stock, the prep goes in, and you see the real yield and cost. By-products (like chicken fat from stock) are credited. **More → Production log** lists every batch. |
 | **Cost tracking** | Each ingredient keeps a cost history. When a delivery changes a cost, the app tells you which dishes now cost more, including dishes that use it through a prep. |
-| **Sales** | Daily entry by dish with +/− steppers, per channel (Dine-in, Takeaway, Delivery…). Shows day totals, by-dish breakdown and food cost %. |
+| **Sales** | Daily entry by dish with +/− steppers, per channel (Dine-in, Takeaway, Grab, LINE MAN…). Each channel uses its own prices, and the delivery-app commission is recorded with every sale. Shows day totals, by-dish breakdown and food cost %. |
+| **Sales channels** | **More → Sales channels**: dine-in, takeaway and delivery apps, each with its commission % and packaging cost per dish. Presets for Grab, LINE MAN, foodpanda, ShopeeFood, Robinhood, Uber Eats, DoorDash, Deliveroo and Just Eat fill a typical rate that you confirm against your contract. |
+| **Channel pricing** | **Menu → Pricing** and each dish's **Prices by channel**: what a dish earns on every channel after commission and packaging, with a suggested price that meets your food-cost target, a one-tap **Use**, and "apply suggested prices" for a whole channel with a preview first. |
+| **Menu analysis** | **Menu → Analysis**: menu engineering over any period and channel. Every dish is a Star (popular, high margin), Plowhorse (popular, low margin), Puzzle (high margin, rarely ordered) or Dog, with what to do about it. The dashboard's **Needs attention** card lists the dishes losing the most margin on a channel. |
 | **Expenses** | Rent, wages, utilities and so on, by category and payment method. |
-| **Reports** | Dashboard with revenue, today's sales, food cost % vs target, net profit and stock value; daily cash-flow chart (money in vs out); top sellers; monthly profit & loss; 6-month summary. |
+| **Reports** | Dashboard with revenue, today's sales, food cost % vs target, net profit and stock value; daily cash-flow chart (money in vs out); top sellers; sales by channel; monthly profit & loss with channel commissions as their own line; 6-month summary. |
 | **Purchasing** | Reorder suggestions from stock levels, numbered purchase orders sent to suppliers by LINE, email, SMS or a printable PO, and receiving deliveries against the order (partial deliveries supported). Supplier invoices are matched three ways (ordered, received, invoiced) with exceptions to approve or dispute, and there's a payables view (to pay, overdue, due soon). |
 | **Team** | Owner / Manager / Staff roles, per-person logins, password change and reset. |
 | **Languages** | English and Thai, switchable per phone. Thai uses Thai number and date formats (Buddhist-era years, ฿). |
@@ -45,8 +48,13 @@ Try it now with no setup: open the app and tap **Explore with demo data**. It lo
 - **Food cost per dish** = Σ(bought amount of each line × ingredient cost). Each sale stores the dish cost on the day it was sold, so old reports don't change when prices move.
 - **Prep cost** = the cost of its recipe ÷ how much one batch makes. It updates when an ingredient inside it changes price. Preps can use other preps (up to 4 levels).
 - **Preps in stock or made to order:** a prep kept in stock is made in batches and deducted when a dish sells. A prep made to order (like a sweet coconut cream mixed per dish) deducts its own ingredients instead.
+- **Channel price** = the dish's price on that channel, or its menu price if none is set.
+- **Commission** = the channel's % of the price (after any discount, unless the channel charges on the full price). It is stored with each sale, so changing a rate later doesn't change old reports.
+- **Margin on a channel** = price × (1 − commission %) − food cost − packaging. **Suggested price** = (food cost + packaging) ÷ (target % × (1 − commission %)), rounded up (to 5 in baht by default; change it in Settings).
+- **Food cost %** in reports stays on the menu price, so it compares with past months. Channel commissions are their own line in profit & loss.
+- **Menu analysis:** a dish is *popular* when its share of dishes sold is at least 70 % of an equal share, and *high margin* when its margin per dish (after food cost and commission) is at or above the average.
 - **Production runs** show the real result of a batch: ingredient cost, minus by-products, ÷ the amount made. A batch below 95 % of the recipe amount is flagged. The real cost is shown next to the recipe cost; dish costs always use the recipe cost.
-- **Profit & loss** = Revenue − food cost (recipes) − waste and stock-count differences − operating expenses. Ingredient purchases are stock (an asset) until they're used, so they appear in **cash flow**, not as a P&L cost.
+- **Profit & loss** = Revenue − food cost (recipes) − waste and stock-count differences − channel commissions − operating expenses. Ingredient purchases are stock (an asset) until they're used, so they appear in **cash flow**, not as a P&L cost.
 - **Cash flow** = money in (sales) vs money out (purchases + expenses), per day.
 
 ### No overwrites when two people work at once
@@ -65,6 +73,7 @@ app/                      ← the PWA (static files: host these)
   css/app.css             ← design system (light + dark)
   js/core.js              ← ALL business rules (shared with the server)
   js/costing.js           ← costing maths: units, yield, preps (shared with the server)
+  js/pricing.js           ← pricing maths: channel margins, suggested prices, menu analysis (shared)
   js/i18n.js              ← English + Thai text and default lists
   js/api.js               ← API client (Apps Script or demo)
   js/demo.js              ← demo backend + sample data
@@ -73,16 +82,17 @@ backend/                  ← Google Apps Script project
   Server.gs               ← web API, Sheets storage, locks, sessions, setup()
   Core.gs                 ← GENERATED copy of app/js/core.js
   Costing.gs              ← GENERATED copy of app/js/costing.js
+  Pricing.gs              ← GENERATED copy of app/js/pricing.js
   appsscript.json
 tools/
-  build_backend.py        ← copies core.js and costing.js → backend/Core.gs, Costing.gs
+  build_backend.py        ← copies core.js, costing.js, pricing.js → backend/*.gs
   test_core.js            ← runs the business-logic tests in tools/tests (Node)
   serve.py                ← local preview server
   make_icons.py           ← regenerates the PNG app icons
   check_i18n.py           ← checks every text exists in English and Thai
 ```
 
-`app/js/core.js` (with `app/js/costing.js`) is the single source of truth for business logic. The demo and the real server run the **same** code. After changing it, run:
+`app/js/core.js` (with `app/js/costing.js` and `app/js/pricing.js`) is the single source of truth for business logic. The demo and the real server run the **same** code. After changing it, run:
 
 ```bash
 python tools/build_backend.py
@@ -98,7 +108,7 @@ python tools/build_backend.py
 2. In the sheet: **Extensions → Apps Script**.
 3. In the editor:
    - Replace the contents of `Code.gs` with `backend/Server.gs`. You can rename the file to `Server`.
-   - Click **+ → Script**, name it `Core`, and paste `backend/Core.gs`. Do the same for `Costing` with `backend/Costing.gs`.
+   - Click **+ → Script**, name it `Core`, and paste `backend/Core.gs`. Do the same for `Costing` with `backend/Costing.gs` and `Pricing` with `backend/Pricing.gs`.
    - **Project Settings (⚙) → Show "appsscript.json" manifest file in editor**, then replace it with `backend/appsscript.json`. Change `timeZone` if you're not in Thailand.
 4. Select the `setup` function in the toolbar and click **Run**. Approve the permissions.
    For a Thai restaurant, run **`setupThai`** instead. It is the same, but fills the sales channels, expense, ingredient and menu categories and units with Thai lists.
@@ -124,7 +134,7 @@ Optional: paste the web-app URL into `app/config.js` (`apiUrl: '…/exec'`) befo
 
 1. Open the hosted URL on your phone and sign in as `owner` with the temporary password.
 2. **More → My account → Change password.**
-3. **More → Settings:** currency, number format, food-cost target, categories, sales channels.
+3. **More → Settings:** currency, number format, food-cost target, price rounding, categories. **More → Sales channels:** your channels and their commission.
 4. **More → Suppliers**, then **Stock → +** for each ingredient (unit, cost, minimum level).
 5. **Menu → +** for each dish and its recipe.
 6. **More → Team & logins:** create a login for each manager and staff member.
@@ -187,7 +197,7 @@ Saves for orders, deliveries, invoices and payments carry a request ID, so a ret
 
 ## Releasing an update
 
-1. Edit files in `app/`. If you changed `core.js` or `costing.js`, run `node tools/test_core.js` and `python tools/build_backend.py`, and paste the new `Core.gs` and `Costing.gs` into Apps Script (then **Manage deployments → New version**).
+1. Edit files in `app/`. If you changed `core.js`, `costing.js` or `pricing.js`, run `node tools/test_core.js` and `python tools/build_backend.py`, and paste the new `Core.gs`, `Costing.gs` and `Pricing.gs` into Apps Script (then **Manage deployments → New version**).
 2. Bump `CACHE` in `app/sw.js` and `VERSION` in `core.js`. If you changed any text, run `python tools/check_i18n.py`.
 3. Re-upload `app/` to your host. Phones pick up the new version the next time the app opens.
 
