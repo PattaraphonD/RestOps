@@ -1,5 +1,5 @@
 // Small dependency-free SVG charts with hover/tap tooltips.
-import { esc, money, fmtDate, number } from './ui.js';
+import { esc, html, money, fmtDate, number } from './ui.js';
 import { t } from './i18n.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -141,4 +141,25 @@ export function barList(container, rows) {
   svg.addEventListener('pointermove', (e) => { const g = e.target.closest('.item'); if (g) show(Number(g.dataset.i)); });
   svg.addEventListener('click', (e) => { const g = e.target.closest('.item'); if (g) show(Number(g.dataset.i)); });
   svg.addEventListener('pointerleave', (e) => { if (e.pointerType === 'mouse') tip.classList.add('hidden'); });
+}
+
+/**
+ * Tiny trend line (no axes) for a series of numbers, oldest first. Returns markup (html-safe).
+ * The <title> summarises first → last for screen readers; `format` formats those two values.
+ */
+export function sparkline(points, { width = 280, height = 48, format = (v) => number(v, 2) } = {}) {
+  const vals = (points || []).map(Number).filter((v) => Number.isFinite(v));
+  if (!vals.length) return html``;
+  const pad = 4;
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const span = max - min;
+  const x = (i) => (vals.length === 1 ? width / 2 : pad + i * (width - pad * 2) / (vals.length - 1));
+  const y = (v) => (span === 0 ? height / 2 : pad + (max - v) / span * (height - pad * 2));
+  const d = vals.map((v, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(v).toFixed(1)}`).join('');
+  const last = vals.length - 1;
+  const label = t('chart.sparkLabel', { first: format(vals[0]), last: format(vals[last]), n: vals.length });
+  return html`<svg class="sparkline" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="${label}">
+    <title>${label}</title>
+    ${vals.length > 1 ? html`<path d="${d}" fill="none" stroke="var(--series-1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>` : ''}
+    <circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}" r="3.5" fill="var(--series-1)"/></svg>`;
 }

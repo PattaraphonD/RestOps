@@ -1,26 +1,55 @@
-// Menu & recipe costing: each dish's ingredients, food cost and margin.
+// Menu hub: dishes (recipes, food cost, margin) and preps (sauces, stocks, pastes made in batches).
 import { call } from '../api.js';
-import { html, raw, mount, icon, money, number, pct, $, $$, openSheet, toast, busy, options, emptyState, foodCostPill } from '../ui.js';
+import {
+  html, raw, mount, icon, money, unitMoney, number, qty, pct, $, $$, openSheet, toast, busy, options, emptyState,
+  foodCostPill, statusPill, initials, unitLabel,
+} from '../ui.js';
 import { list } from '../app.js';
 import { t } from '../i18n.js';
+import { recipeLines } from './recipe-lines.js';
+import { ingredientSheet, itemSheet } from './stock.js';
 
-const ui = { search: '', sort: 'name' };
+const ui = { tab: 'dishes', search: '', sort: 'name' };
+const VARIANCE_FLAG = 10;
 
 export async function render(ctx) {
-  const { el, state, setTitle, setActions, can } = ctx;
+  const { el, setTitle, setActions, can } = ctx;
   setTitle(t('menu.title'));
+  // Stock sheets opened from here redraw this view (not Stock) after saving.
+  const sctx = { ...ctx, redraw: () => render(ctx) };
+  if (can('manager')) {
+    const label = ui.tab === 'preps' ? t('menu.newPrep') : t('menu.newDish');
+    setActions(html`<button class="icon-btn" id="new-item" aria-label="${label}">${icon('plus')}</button>`)
+      .querySelector('#new-item').addEventListener('click', () => (ui.tab === 'preps' ? ingredientSheet(sctx, null, { kind: 'prep' }) : dishSheet(ctx)));
+  } else setActions('');
+
+  mount(el, html`
+    <div class="seg" role="group" aria-label="${t('menu.tabs')}" style="margin-top:4px">
+      <button aria-pressed="${ui.tab === 'dishes'}" data-tab="dishes">${t('menu.tabDishes')}</button>
+      <button aria-pressed="${ui.tab === 'preps'}" data-tab="preps">${t('menu.tabPreps')}</button>
+    </div>
+    <div id="menu-tab"></div>`);
+  $$('[data-tab]', el).forEach((b) => b.addEventListener('click', () => {
+    if (ui.tab === b.dataset.tab) return;
+    ui.tab = b.dataset.tab;
+    render(ctx);
+  }));
+  const host = el.querySelector('#menu-tab');
+  if (ui.tab === 'preps') renderPreps(sctx, host); else renderDishes(ctx, host);
+}
+
+/* ---------------------------------------------------------------- dishes */
+
+function renderDishes(ctx, host) {
+  const { state, can } = ctx;
   const boot = state.boot;
   const target = Number(boot.settings.targetFoodCostPct) || 30;
-  if (can('manager')) {
-    setActions(html`<button class="icon-btn" id="new-dish" aria-label="${t('menu.newDish')}">${icon('plus')}</button>`)
-      .querySelector('#new-dish').addEventListener('click', () => dishSheet(ctx));
-  }
   const active = boot.menu.filter((m) => m.active);
   const priced = active.filter((m) => m.foodCostPct !== null);
   const avg = priced.length ? priced.reduce((a, m) => a + m.foodCostPct, 0) / priced.length : null;
   const over = priced.filter((m) => m.foodCostPct > target).length;
 
-  mount(el, html`
+  mount(host, html`
     <div class="card summary-strip">
       <div><div class="val">${active.length}</div><div class="label">${t('menu.dishes')}</div></div>
       <div><div class="val">${pct(avg)}</div><div class="label">${t('menu.avgFoodCost')}</div></div>
@@ -60,13 +89,25 @@ export async function render(ctx) {
       if (can('manager')) dishSheet(ctx, m); else viewSheet(m, target);
     }));
   };
-  el.querySelector('.search input').addEventListener('input', (e) => { ui.search = e.target.value; draw(); });
-  $$('[data-sort]', el).forEach((b) => b.addEventListener('click', () => {
+  host.querySelector('.search input').addEventListener('input', (e) => { ui.search = e.target.value; draw(); });
+  $$('[data-sort]', host).forEach((b) => b.addEventListener('click', () => {
     ui.sort = b.dataset.sort;
-    $$('[data-sort]', el).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+    $$('[data-sort]', host).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
     draw();
   }));
   draw();
+}
+
+/** Cost breakdown rows, costliest first, each with its share of the dish cost. */
+function breakdownHtml(lines) {
+  const rows = lines.filter((l) => l.ingredientId || l.name).slice().sort((a, b) => b.cost - a.cost);
+  if (!rows.length) return html`<li class="pl-row muted"><span>—</span></li>`;
+  return rows.map((l) => html`<li>
+    <div class="share-top"><span>${l.name}</span>
+      ${l.error === 'unit' ? html`<span class="warn-text small">${icon('alert')}${t('recipe.cantConvert')}</span>`
+        : html`<span><b>${money(l.cost)}</b> <span class="muted small">${pct(l.share, 0)}</span></span>`}</div>
+    <div class="cost-bar" aria-hidden="true"><span style="width:${Math.max(0, Math.min(100, l.share))}%;background:var(--brand)"></span></div>
+  </li>`);
 }
 
 function viewSheet(m, target) {
@@ -77,29 +118,24 @@ function viewSheet(m, target) {
         <div><div class="val">${money(m.foodCost)}</div><div class="label">${t('home.foodCost')}</div></div>
         <div><div class="val">${foodCostPill(m.foodCostPct, target)}</div><div class="label">${t('menu.costPct')}</div></div></div>
       <div class="card"><ul class="list">${m.recipe.map((l) => html`<li class="pl-row"><span>${l.name}</span>
-        <span class="tabular">${number(l.qty, 4)} ${l.unit} · ${money(l.cost)}</span></li>`)}</ul></div>`,
+        <span class="tabular">${number(l.qty, 4)} ${unitLabel(l.unit)} · ${money(l.cost)}</span></li>`)}</ul></div>
+      ${m.recipe.length ? html`<div class="section-head" style="margin-top:16px"><h2 style="font-size:15px">${t('menu.breakdown')}</h2></div>
+        <div class="card"><ul class="list share-list">${breakdownHtml(m.recipe)}</ul></div>` : ''}`,
   });
 }
 
 function dishSheet(ctx, item) {
   const boot = ctx.state.boot;
   const target = Number(boot.settings.targetFoodCostPct) || 30;
-  const ings = boot.ingredients.filter((i) => i.active || (item && item.recipe.some((l) => l.ingredientId === i.id)));
   const cats = [...new Set([...list(boot.settings.menuCategories), ...boot.menu.map((m) => m.category).filter(Boolean)])];
   const isNew = !item;
   item = item || { active: true, recipe: [] };
-
-  const ingSelect = (selected) => html`<option value="">${t('stock.chooseIngredient')}</option>${ings.map((i) =>
-    html`<option value="${i.id}" ${i.id === selected ? raw('selected') : ''}>${i.name} (${i.unit})</option>`)}`;
-  const lineHtml = (l = {}) => html`<div class="line-item" data-line>
-    <div style="display:flex;gap:8px;align-items:center">
-      <select class="select" name="ingredientId" aria-label="${t('stock.ingredient')}">${ingSelect(l.ingredientId)}</select>
-      <button type="button" class="icon-btn" data-remove aria-label="${t('menu.removeIngredient')}">${icon('x')}</button></div>
-    <div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-      <div class="input-group grow"><input class="input" name="qty" type="number" inputmode="decimal" min="0" step="any" value="${l.qty ?? ''}" placeholder="${t('menu.qtyPerDish')}" aria-label="${t('menu.qtyPerDish')}">
-        <span class="addon" data-unit>${(ings.find((i) => i.id === l.ingredientId) || {}).unit || t('stock.unit')}</span></div>
-      <b class="tabular nowrap" data-cost style="min-width:76px;text-align:right">—</b></div>
-  </div>`;
+  // Boot recipe lines carry the effective yield; only a value that differs from the ingredient's is an override.
+  const initial = item.recipe.map((l) => {
+    const ing = boot.ingredients.find((i) => i.id === l.ingredientId);
+    const override = ing && Number(l.yieldPct) !== Number(ing.yieldPct) ? l.yieldPct : '';
+    return { ingredientId: l.ingredientId, qty: l.qty, unit: l.unit, yieldPct: override };
+  });
 
   openSheet({
     title: isNew ? t('menu.newDish') : t('menu.editDish'),
@@ -111,7 +147,7 @@ function dishSheet(ctx, item) {
       </div>
       <div class="section-head" style="margin-top:6px"><h2 style="font-size:15px">${t('menu.recipe')}</h2></div>
       <p class="small muted" style="margin:-4px 2px 10px">${t('menu.recipeHelp')}</p>
-      <div id="lines">${item.recipe.length ? item.recipe.map((l) => lineHtml(l)) : lineHtml()}</div>
+      <div id="lines"></div>
       <button type="button" class="btn sm" id="add-line">${icon('plus')}${t('menu.addIngredient')}</button>
       <div class="card" style="margin-top:16px">
         <div class="pl-row"><span>${t('menu.costPerDish')}</span><b class="tabular" id="cost">—</b></div>
@@ -119,51 +155,32 @@ function dishSheet(ctx, item) {
         <div class="pl-row"><span>${t('menu.marginPerDish')}</span><b class="tabular" id="margin">—</b></div>
         <div class="pl-row"><span>${t('menu.priceForTarget', { n: target })}</span><span class="tabular" id="suggest">—</span></div>
       </div>
+      <div class="section-head" style="margin-top:16px"><h2 style="font-size:15px">${t('menu.breakdown')}</h2></div>
+      <div class="card"><ul class="list share-list" id="breakdown"></ul></div>
       ${isNew ? '' : html`<label class="check" style="margin-top:12px"><input type="checkbox" name="active" ${item.active ? raw('checked') : ''}> ${t('menu.onMenu')}</label>`}
     </form>`,
     foot: html`<button class="btn primary block" id="save">${isNew ? t('menu.addDish') : t('menu.saveDish')}</button>`,
     onMount(el, close) {
       const form = el.querySelector('#f');
-      const host = el.querySelector('#lines');
-      const lines = () => $$('[data-line]', host).map((w) => ({
-        el: w, ingredientId: w.querySelector('[name=ingredientId]').value, qty: Number(w.querySelector('[name=qty]').value) || 0,
-      }));
-      const recalc = () => {
-        let total = 0;
-        lines().forEach((l) => {
-          const ing = ings.find((i) => i.id === l.ingredientId);
-          l.el.querySelector('[data-unit]').textContent = ing ? ing.unit : t('stock.unit');
-          const c = ing ? ing.costPerUnit * l.qty : 0;
-          total += c;
-          l.el.querySelector('[data-cost]').textContent = ing && l.qty ? money(c) : '—';
-        });
+      let totals = { cost: 0, lines: [], problem: '' };
+      const summary = () => {
+        const total = totals.cost;
         const price = Number(form.price.value) || 0;
-        el.querySelector('#cost').textContent = money(total);
+        if (totals.problem) {
+          mount(el.querySelector('#cost'), html`<span class="warn-text small">${icon('alert')}${t(totals.problem === 'depth' ? 'recipe.depth' : 'recipe.cycle')}</span>`);
+        } else el.querySelector('#cost').textContent = money(total);
         mount(el.querySelector('#pct'), price ? foodCostPill(total / price * 100, target) : '—');
         el.querySelector('#margin').textContent = price ? money(price - total) : '—';
         el.querySelector('#suggest').textContent = total ? money(total / (target / 100)) : '—';
+        mount(el.querySelector('#breakdown'), breakdownHtml(totals.lines));
       };
-      const wire = (w) => {
-        w.querySelector('[data-remove]').addEventListener('click', () => {
-          if ($$('[data-line]', host).length > 1) w.remove(); else w.querySelectorAll('input, select').forEach((x) => { x.value = ''; });
-          recalc();
-        });
-      };
-      $$('[data-line]', host).forEach(wire);
-      host.addEventListener('input', recalc);
-      host.addEventListener('change', recalc);
-      form.price.addEventListener('input', recalc);
-      el.querySelector('#add-line').addEventListener('click', () => {
-        const tmp = document.createElement('div');
-        mount(tmp, lineHtml());
-        const w = tmp.firstElementChild;
-        host.append(w);
-        wire(w);
-        w.querySelector('select').focus();
+      const editor = recipeLines(el.querySelector('#lines'), {
+        ingredients: boot.ingredients, lines: initial, onChange: (x) => { totals = x; summary(); },
       });
-      recalc();
+      form.price.addEventListener('input', summary);
+      el.querySelector('#add-line').addEventListener('click', () => editor.add().querySelector('select').focus());
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
-        const recipe = lines().filter((l) => l.ingredientId || l.qty).map((l) => ({ ingredientId: l.ingredientId, qty: l.qty }));
+        const recipe = editor.values().map((l) => ({ ingredientId: l.ingredientId, qty: l.qty, unit: l.unit, yieldPct: l.yieldPct }));
         try {
           await call('menu.save', {
             item: { id: item.id, version: item.version, name: form.name.value, price: form.price.value, category: form.category.value,
@@ -181,4 +198,39 @@ function dishSheet(ctx, item) {
       }, form));
     },
   });
+}
+
+/* ----------------------------------------------------------------- preps */
+
+function renderPreps(ctx, host) {
+  const { state, can } = ctx;
+  const preps = state.boot.ingredients.filter((i) => i.kind === 'prep' && (i.active || can('manager')));
+  const active = preps.filter((p) => p.active);
+  const flagged = (p) => p.costVariancePct !== null && p.costVariancePct !== undefined && Math.abs(p.costVariancePct) > VARIANCE_FLAG;
+
+  if (!preps.length) {
+    mount(host, html`<div class="card">${emptyState('chef', t('menu.prepsNoneTitle'), can('manager') ? t('menu.prepsNoneText') : t('menu.prepsNoneStaff'),
+      can('manager') ? html`<button class="btn primary" id="first-prep">${icon('plus')}${t('menu.newPrep')}</button>` : null)}</div>`);
+    const b = host.querySelector('#first-prep');
+    if (b) b.addEventListener('click', () => ingredientSheet(ctx, null, { kind: 'prep' }));
+    return;
+  }
+  const rows = preps.slice().sort((a, b) => (a.active !== b.active ? (a.active ? -1 : 1) : a.name.localeCompare(b.name)));
+  mount(host, html`
+    <div class="card summary-strip">
+      <div><div class="val">${active.length}</div><div class="label">${t('menu.tabPreps')}</div></div>
+      <div><div class="val">${active.filter((p) => p.trackStock).length}</div><div class="label">${t('menu.prepsTracked')}</div></div>
+      <div><div class="val" style="${active.some(flagged) ? 'color:var(--warn-ink)' : ''}">${active.filter(flagged).length}</div><div class="label">${t('menu.prepsFlagged')}</div></div>
+    </div>
+    <div class="card" style="margin-top:14px"><ul class="list">${rows.map((p) => html`<li>
+      <button class="row" data-id="${p.id}" style="${p.active ? '' : 'opacity:.55'}">
+        <span class="avatar brand">${initials(p.name)}</span>
+        <span class="grow"><div class="title">${p.name}${p.active ? '' : ` (${t('menu.hidden')})`}</div>
+          <div class="sub">${unitMoney(p.costPerUnit)} / ${unitLabel(p.unit)}${p.trackStock ? ` · ${t('menu.prepOnHand', { qty: qty(p.onHand, unitLabel(p.unit)) })}` : ''}</div></span>
+        <span class="value">${flagged(p)
+          ? html`<span class="pill warn">${icon('alert')}${t('menu.prepVariance', { pct: `${p.costVariancePct > 0 ? '+' : ''}${pct(p.costVariancePct, 0)}` })}</span>`
+          : p.trackStock ? statusPill(p.status) : ''}</span>
+      </button></li>`)}</ul></div>
+    <p class="small muted" style="margin:10px 4px">${t('menu.prepsNote')}</p>`);
+  $$('[data-id]', host).forEach((b) => b.addEventListener('click', () => itemSheet(ctx, b.dataset.id)));
 }

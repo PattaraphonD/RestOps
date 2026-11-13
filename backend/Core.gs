@@ -16,7 +16,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '1.2.0';
+  var VERSION = '1.3.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -29,13 +29,14 @@ var RestoCore = (function () {
     Suppliers: ['id', 'name', 'contactName', 'phone', 'email', 'notes', 'active',
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'leadTimeDays', 'paymentTermsDays'],
     Ingredients: ['id', 'name', 'category', 'unit', 'costPerUnit', 'minLevel', 'supplierId', 'active',
-      'createdAt', 'updatedAt', 'updatedBy', 'version', 'parLevel'],
+      'createdAt', 'updatedAt', 'updatedBy', 'version', 'parLevel',
+      'yieldPct', 'kind', 'batchQty', 'trackStock', 'shelfLifeDays'],
     Purchases: ['id', 'date', 'supplierId', 'ingredientId', 'qty', 'unitCost', 'total', 'invoiceRef',
       'note', 'voided', 'createdAt', 'createdBy', 'poId', 'poLineId'],
     StockMovements: ['id', 'date', 'ingredientId', 'type', 'qty', 'unitCost', 'value', 'reason', 'refId',
       'voided', 'createdAt', 'createdBy'],
     Menu: ['id', 'name', 'category', 'price', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
-    Recipes: ['id', 'menuItemId', 'ingredientId', 'qty', 'note'],
+    Recipes: ['id', 'menuItemId', 'ingredientId', 'qty', 'note', 'unit', 'yieldPct'],
     Sales: ['id', 'date', 'menuItemId', 'itemName', 'qty', 'unitPrice', 'total', 'unitCost', 'costTotal',
       'channel', 'note', 'voided', 'createdAt', 'createdBy'],
     Expenses: ['id', 'date', 'category', 'description', 'amount', 'paymentMethod', 'note', 'voided',
@@ -47,14 +48,20 @@ var RestoCore = (function () {
     SupplierInvoices: ['id', 'invoiceNo', 'supplierId', 'poId', 'invoiceDate', 'dueDate', 'subtotal', 'vat', 'total',
       'status', 'exceptionCount', 'varianceAmount', 'reviewNote', 'reviewedAt', 'reviewedBy',
       'paidAt', 'paidBy', 'paymentMethod', 'paymentRef', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
-    SupplierInvoiceLines: ['id', 'invoiceId', 'ingredientId', 'qty', 'unitPrice', 'total']
+    SupplierInvoiceLines: ['id', 'invoiceId', 'ingredientId', 'qty', 'unitPrice', 'total'],
+    // Costing: unit conversions, prep (sub-recipe) lines and the cost change log.
+    IngredientUnits: ['id', 'ingredientId', 'unit', 'factor'],
+    PrepRecipes: ['id', 'prepId', 'ingredientId', 'qty', 'unit', 'yieldPct', 'note'],
+    CostChanges: ['id', 'date', 'ingredientId', 'oldCost', 'newCost', 'source', 'refId', 'createdAt', 'createdBy'],
+    ProductionRuns: ['id', 'runNo', 'date', 'prepId', 'batches', 'expectedQty', 'producedQty', 'unit', 'inputCost',
+      'byproductValue', 'totalCost', 'unitCost', 'yieldPct', 'producedBy', 'note', 'voided', 'createdAt', 'createdBy']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -84,7 +91,7 @@ var RestoCore = (function () {
   };
 
   var ROLES = { staff: 1, manager: 2, owner: 3 };
-  var MOVEMENT_TYPES = ['usage', 'waste', 'count', 'adjustment', 'sale'];
+  var MOVEMENT_TYPES = ['usage', 'waste', 'count', 'adjustment', 'sale', 'production', 'produce', 'byproduct'];
   var SESSION_TTL_SECONDS = 6 * 60 * 60;   // sliding: every request extends it
   var MAX_FAILED_LOGINS = 5;
   var LOCKOUT_SECONDS = 10 * 60;
@@ -246,14 +253,19 @@ var RestoCore = (function () {
     'Expected date': 'วันที่คาดว่าจะได้รับ', 'Invoice number': 'เลขที่ใบแจ้งหนี้', 'Invoice date': 'วันที่ใบแจ้งหนี้',
     'Due date': 'วันครบกำหนด', 'VAT': 'ภาษีมูลค่าเพิ่ม', 'Invoice total': 'ยอดรวมใบแจ้งหนี้', 'Payment date': 'วันที่จ่าย',
     'Purchase order': 'ใบสั่งซื้อ', 'Invoice': 'ใบแจ้งหนี้', 'Order line': 'รายการสั่งซื้อ',
+    'Batches': 'จำนวนรอบผลิต', 'Batch quantity': 'ปริมาณต่อรอบผลิต', 'Conversion factor': 'ตัวคูณการแปลงหน่วย',
+    'Conversion unit': 'หน่วยที่แปลง', 'Shelf life (days)': 'อายุการเก็บ (วัน)', 'Quantity made': 'จำนวนที่ผลิตได้', 'Production run': 'การผลิต',
     'cancelled': 'ถูกยกเลิก', 'closed': 'ปิดแล้ว', 'received': 'รับครบแล้ว', 'draft': 'เป็นฉบับร่าง',
     'sent': 'ส่งแล้ว', 'partial': 'รับบางส่วนแล้ว', 'paid': 'จ่ายแล้ว', 'disputed': 'โต้แย้งอยู่'
   };
+  function formatRunNo(n) { return 'PR-' + (n < 10000 ? ('0000' + n).slice(-4) : String(n)); }
   function thLabel(l) {
     var m;
     if (TH_LABELS[l]) return TH_LABELS[l];
     if ((m = /^Line (\d+) quantity$/.exec(l))) return 'จำนวนในรายการที่ ' + m[1];
     if ((m = /^Line (\d+) unit cost$/.exec(l))) return 'ราคาต่อหน่วยในรายการที่ ' + m[1];
+    if ((m = /^Input (\d+) quantity$/.exec(l))) return 'จำนวนวัตถุดิบที่ใช้รายการที่ ' + m[1];
+    if ((m = /^By-product (\d+) quantity$/.exec(l))) return 'จำนวนผลพลอยได้รายการที่ ' + m[1];
     if ((m = /^Recipe line (\d+) quantity$/.exec(l))) return 'ปริมาณในสูตรบรรทัดที่ ' + m[1];
     if ((m = /^(Ingredient|Supplier|Dish|User) "([\s\S]*)"$/.exec(l))) return TH_LABELS[m[1]] + ' "' + m[2] + '"';
     if ((m = /^([\s\S]+) quantity$/.exec(l))) return 'จำนวน ' + m[1];
@@ -325,7 +337,25 @@ var RestoCore = (function () {
     [/^Add a note explaining the decision\.$/, 'กรุณาใส่หมายเหตุอธิบายเหตุผล'],
     [/^Only matched or approved invoices can be paid\.$/, 'จ่ายได้เฉพาะใบแจ้งหนี้ที่ตรงกันหรืออนุมัติแล้ว'],
     [/^This invoice is already (\w+)\.$/, function (m) { return 'ใบแจ้งหนี้นี้' + thLabel(m[1]); }],
-    [/^A cancelled order can't be invoiced\.$/, 'ใบสั่งซื้อที่ถูกยกเลิกแล้วออกใบแจ้งหนี้ไม่ได้']
+    [/^A cancelled order can't be invoiced\.$/, 'ใบสั่งซื้อที่ถูกยกเลิกแล้วออกใบแจ้งหนี้ไม่ได้'],
+    [/^Yield must be between 1 and 1000 %\.$/, 'ผลผลิตต้องอยู่ระหว่าง 1 ถึง 1000 %'],
+    [/^A prep needs at least one recipe line\.$/, 'งานเตรียมต้องมีวัตถุดิบอย่างน้อยหนึ่งรายการ'],
+    [/^Recipe line (\d+): choose an ingredient\.$/, 'สูตรบรรทัดที่ $1: เลือกวัตถุดิบ'],
+    [/^Can't convert ([\s\S]+) to ([\s\S]+) for ([\s\S]+?)\. Add a conversion on the ingredient\.(?: Used in ([\s\S]+)\.)?$/, function (m) {
+      return 'แปลงหน่วย ' + m[1] + ' เป็น ' + m[2] + ' ของ ' + m[3] + ' ไม่ได้ กรุณาเพิ่มการแปลงหน่วยที่วัตถุดิบ' + (m[4] ? ' (ใช้ใน ' + m[4] + ')' : ''); }],
+    [/^([\s\S]+) is made to order and isn't kept in stock\.$/, function (m) { return m[1] + ' ทำตามออเดอร์ ไม่เก็บสต็อก'; }],
+    [/^([\s\S]+) can't contain itself \(via ([\s\S]+)\)\.$/, function (m) { return m[1] + ' ใส่ตัวเองเป็นส่วนผสมไม่ได้ (ผ่าน ' + m[2] + ')'; }],
+    [/^Preps can be nested at most 4 levels deep\.$/, 'งานเตรียมซ้อนกันได้ไม่เกิน 4 ชั้น'],
+    [/^([\s\S]+) is in the recipe twice\.$/, function (m) { return m[1] + ' อยู่ในสูตรซ้ำสองครั้ง'; }],
+    [/^A conversion can't use the stock unit itself\.$/, 'การแปลงหน่วยใช้หน่วยสต็อกเดียวกันไม่ได้'],
+    [/^Choose a prep item to produce\.$/, 'กรุณาเลือกงานเตรียมที่ผลิต'],
+    [/^Input (\d+): choose an ingredient\.$/, 'วัตถุดิบที่ใช้รายการที่ $1: กรุณาเลือกวัตถุดิบ'],
+    [/^By-product (\d+): choose an ingredient\.$/, 'ผลพลอยได้รายการที่ $1: กรุณาเลือกวัตถุดิบ'],
+    [/^Choose who made it\.$/, 'กรุณาเลือกผู้ผลิต'],
+    [/^A by-product can't be the item being produced\.$/, 'ผลพลอยได้ต้องไม่ใช่รายการที่กำลังผลิต'],
+    [/^Production entries are removed by voiding the production run\.$/, 'รายการผลิตต้องยกเลิกที่การผลิตนั้น'],
+    [/^Line (\d+): ([\s\S]+) is made in the kitchen\. Record a production run instead\.$/, function (m) {
+      return 'บรรทัดที่ ' + m[1] + ': ' + m[2] + ' ผลิตในครัว กรุณาบันทึกการผลิตแทน'; }]
   ];
   function translate(message, lang) {
     if (lang !== 'th' || !message) return message;
@@ -405,45 +435,132 @@ var RestoCore = (function () {
       return m;
     }
 
+    // Joins Ingredients + IngredientUnits + PrepRecipes into the shape RestoCosting.buildBook expects.
+    // `override` (optional) is a full ingredient object that replaces/adds the item being saved.
+    function ingredientCostRows(override) {
+      var convs = {}, lines = {};
+      db.read('IngredientUnits').forEach(function (r) {
+        (convs[r.ingredientId] = convs[r.ingredientId] || []).push({ unit: r.unit, factor: num(r.factor) });
+      });
+      db.read('PrepRecipes').forEach(function (r) {
+        (lines[r.prepId] = lines[r.prepId] || []).push({ ingredientId: r.ingredientId, qty: num(r.qty), unit: r.unit,
+          yieldPct: r.yieldPct, note: r.note || '' });
+      });
+      var out = db.read('Ingredients').filter(function (i) { return !override || i.id !== override.id; }).map(function (i) {
+        var kind = trim(i.kind) === 'prep' ? 'prep' : 'raw';
+        return { id: i.id, name: i.name, unit: i.unit, costPerUnit: num(i.costPerUnit),
+          yieldPct: trim(i.yieldPct) === '' ? 100 : num(i.yieldPct), kind: kind,
+          batchQty: num(i.batchQty), trackStock: trim(i.trackStock) === '' ? true : bool(i.trackStock),
+          shelfLifeDays: trim(i.shelfLifeDays) === '' ? '' : num(i.shelfLifeDays),
+          conversions: convs[i.id] || [], prepLines: kind === 'prep' ? (lines[i.id] || []) : [] };
+      });
+      if (override) out.push(override);
+      return out;
+    }
+    function loadBook(override) { return RestoCosting.buildBook(ingredientCostRows(override)); }
+
+    // prepCosts, with its thrown cycle/depth markers turned into validation errors.
+    function prepCostsOrFail(book) {
+      try { return RestoCosting.prepCosts(book); } catch (e) {
+        if (e && e.code === 'CYCLE') fail('VALIDATION', e.prep + " can't contain itself (via " + e.via + ').');
+        if (e && e.code === 'DEPTH') fail('VALIDATION', 'Preps can be nested at most 4 levels deep.');
+        throw e;
+      }
+    }
+
+    function recordCostChange(ingredientId, oldCost, newCost, source, refId, user) {
+      var o = round(num(oldCost), 4), n = round(num(newCost), 4);
+      if (o === n) return;
+      db.append('CostChanges', [{ id: newId('CST'), date: nowIso().slice(0, 10), ingredientId: ingredientId,
+        oldCost: o, newCost: n, source: source, refId: refId || '', createdAt: nowIso(), createdBy: user.username }]);
+    }
+
+    // Recomputes every prep's cost from its recipe and stores the ones that moved.
+    function syncPrepCosts(user, source, refId) {
+      var costs = prepCostsOrFail(loadBook());
+      var changed = [];
+      var ts = nowIso();
+      db.read('Ingredients').forEach(function (i) {
+        if (trim(i.kind) !== 'prep' || costs[i.id] === undefined) return;
+        var next = round(costs[i.id], 4);
+        var old = num(i.costPerUnit);
+        if (Math.abs(next - old) <= 0.0001) return;
+        db.updateWhere('Ingredients', function (x) { return x.id === i.id; },
+          { costPerUnit: next, updatedAt: ts, updatedBy: user.username, version: num(i.version) + 1 });
+        recordCostChange(i.id, old, next, source, refId, user);
+        changed.push({ id: i.id, name: i.name, oldCost: old, newCost: next });
+      });
+      return changed;
+    }
+
+    /** Mean unitCost of each prep's last 5 non-voided production runs. */
+    function actualUnitCosts() {
+      var runs = live(db.read('ProductionRuns')).sort(newestFirst);
+      var seen = {}, tot = {}, out = {};
+      runs.forEach(function (r) {
+        var n = seen[r.prepId] || 0;
+        if (n >= 5) return;
+        seen[r.prepId] = n + 1;
+        tot[r.prepId] = (tot[r.prepId] || 0) + num(r.unitCost);
+      });
+      Object.keys(seen).forEach(function (k) { out[k] = round(tot[k] / seen[k], 4); });
+      return out;
+    }
+
     function stockLevels() {
       var onHand = onHandMap();
       var onOrder = onOrderMap();
       var suppliers = byId(db.read('Suppliers'));
+      var costRows = byId(ingredientCostRows());
+      var actual = actualUnitCosts();
       return db.read('Ingredients').map(function (i) {
+        var cr = costRows[i.id];
         var qty = round(onHand[i.id] || 0, 3);
         var min = num(i.minLevel);
-        var status = qty <= 0 ? 'out' : qty <= min ? 'low' : 'ok';
+        // A prep made fresh to order (not kept in stock) never runs low.
+        var untracked = cr.kind === 'prep' && cr.trackStock === false;
+        var status = untracked ? 'ok' : qty <= 0 ? 'out' : qty <= min ? 'low' : 'ok';
         return {
           id: i.id, name: i.name, category: i.category, unit: i.unit,
           costPerUnit: round(num(i.costPerUnit), 4), minLevel: min, parLevel: num(i.parLevel),
           onOrder: round(onOrder[i.id] || 0, 3),
           supplierId: i.supplierId || '', supplierName: suppliers[i.supplierId] ? suppliers[i.supplierId].name : '',
           active: bool(i.active), version: num(i.version),
-          onHand: qty, value: round(qty * num(i.costPerUnit)), status: status
+          onHand: qty, value: round(qty * num(i.costPerUnit)), status: status,
+          yieldPct: cr.yieldPct, kind: cr.kind, batchQty: cr.batchQty, trackStock: cr.trackStock,
+          shelfLifeDays: cr.shelfLifeDays, conversions: cr.conversions, prepLines: cr.prepLines,
+          actualUnitCost: actual[i.id] === undefined ? null : actual[i.id],
+          costVariancePct: actual[i.id] === undefined || !(num(i.costPerUnit) > 0) ? null
+            : round((actual[i.id] - num(i.costPerUnit)) / num(i.costPerUnit) * 100, 1)
         };
       }).sort(function (a, b) { return a.name.localeCompare(b.name); });
     }
 
-    function recipeCost(lines, ingredients) {
-      return sum(lines, function (l) {
-        var ing = ingredients[l.ingredientId];
-        return ing ? num(l.qty) * num(ing.costPerUnit) : 0;
-      });
-    }
-
     function menuWithCost() {
       var ingredients = byId(db.read('Ingredients'));
+      var book = loadBook();
+      var costs = {};
+      try { costs = RestoCosting.prepCosts(book); } catch (e) { costs = {}; }
       var recipes = {};
       db.read('Recipes').forEach(function (r) { (recipes[r.menuItemId] = recipes[r.menuItemId] || []).push(r); });
       return db.read('Menu').map(function (m) {
+        var total = 0;
         var lines = (recipes[m.id] || []).map(function (r) {
-          var ing = ingredients[r.ingredientId] || {};
+          var ing = ingredients[r.ingredientId];
+          var unit = trim(r.unit) || (ing ? ing.unit : '');
+          var yl = trim(r.yieldPct) === '' ? '' : num(r.yieldPct);
+          var res = RestoCosting.lineCost({ ingredientId: r.ingredientId, qty: num(r.qty), unit: unit, yieldPct: yl }, book, costs);
+          total += res.cost;
+          var bi = book.byId[r.ingredientId];
           return {
-            ingredientId: r.ingredientId, name: ing.name || '(removed ingredient)', unit: ing.unit || '',
-            qty: num(r.qty), cost: round(num(r.qty) * num(ing.costPerUnit), 4)
+            ingredientId: r.ingredientId, name: ing ? ing.name : '(removed ingredient)', kind: bi ? bi.kind : 'raw',
+            unit: unit, stockUnit: ing ? ing.unit : '', qty: num(r.qty),
+            yieldPct: yl === '' ? (bi ? bi.yieldPct : 100) : yl,
+            grossQty: round(res.grossQty, 4), cost: round(res.cost, 4), rawCost: res.cost, share: 0, error: res.error || ''
           };
         });
-        var cost = round(recipeCost(lines, ingredients), 2);
+        lines.forEach(function (l) { l.share = total > 0 ? round(l.rawCost / total * 100, 1) : 0; delete l.rawCost; });
+        var cost = round(total, 2);
         var price = num(m.price);
         return {
           id: m.id, name: m.name, category: m.category, price: price, active: bool(m.active),
@@ -574,6 +691,10 @@ var RestoCore = (function () {
         }).sort(function (a, b) { return a.name.localeCompare(b.name); }),
         menu: menuWithCost(),
         users: isOwner ? db.read('Users').map(publicUser) : [],
+        // Active people only (for "made by" pickers); every role gets it, with no account details.
+        team: active(db.read('Users')).map(function (u) {
+          return { username: u.username, displayName: u.displayName || u.username };
+        }).sort(function (a, b) { return String(a.displayName).localeCompare(String(b.displayName)); }),
         purchasing: purchasingCounts(p.today)
       };
     } };
@@ -598,6 +719,7 @@ var RestoCore = (function () {
       var rows = lines.map(function (l, i) {
         var ing = ingredients[l.ingredientId];
         if (!ing) fail('VALIDATION', 'Line ' + (i + 1) + ': choose an ingredient.');
+        if (trim(ing.kind) === 'prep') fail('VALIDATION', 'Line ' + (i + 1) + ': ' + ing.name + ' is made in the kitchen. Record a production run instead.');
         var qty = reqNum(l.qty, 'Line ' + (i + 1) + ' quantity', { positive: true });
         var unitCost = reqNum(l.unitCost, 'Line ' + (i + 1) + ' unit cost', { min: 0 });
         return { id: newId('PUR'), date: date, supplierId: supplierId || ing.supplierId || '', ingredientId: ing.id,
@@ -605,12 +727,15 @@ var RestoCore = (function () {
           invoiceRef: optStr(header.invoiceRef, 60), note: optStr(header.note), voided: false, createdAt: ts, createdBy: user.username,
           poId: trim(header.poId), poLineId: trim(l.poLineId) };
       });
+      var dishesBefore = menuWithCost();
+      var oldCosts = {};
       db.append('Purchases', rows);
       // Update ingredient cost so recipe costing follows real prices.
       rows.forEach(function (r) {
         var ing = ingredients[r.ingredientId];
         var have = Math.max(0, onHand[ing.id] || 0);
         var oldCost = num(ing.costPerUnit);
+        if (oldCosts[ing.id] === undefined) oldCosts[ing.id] = oldCost;
         var newCost = method === 'last' || have <= 0 || oldCost <= 0
           ? r.unitCost
           : (have * oldCost + r.qty * r.unitCost) / (have + r.qty);
@@ -619,8 +744,40 @@ var RestoCore = (function () {
         db.updateWhere('Ingredients', function (x) { return x.id === ing.id; },
           { costPerUnit: ing.costPerUnit, updatedAt: ts, updatedBy: user.username, version: num(ing.version) + 1 });
         ing.version = num(ing.version) + 1;
+        recordCostChange(ing.id, oldCost, ing.costPerUnit, 'purchase', r.id, user);
       });
-      return { count: rows.length, total: round(sum(rows, function (r) { return r.total; })) };
+      var prepChanges = syncPrepCosts(user, 'prep', rows[0].id);
+      return { count: rows.length, total: round(sum(rows, function (r) { return r.total; })),
+        impact: buildImpact(dishesBefore, oldCosts, prepChanges) };
+    }
+
+    /** Which ingredients moved by 1% or more, and which active dishes now cost more or less. */
+    function buildImpact(dishesBefore, oldCosts, prepChanges) {
+      var ings = byId(db.read('Ingredients'));
+      var moved = [];
+      var seen = {};
+      function consider(id, oldCost, newCost) {
+        if (seen[id] || !ings[id] || !(oldCost > 0)) return;
+        var pct = round((newCost - oldCost) / oldCost * 100, 1);
+        if (Math.abs(pct) < 1) return;
+        seen[id] = true;
+        moved.push({ id: id, name: ings[id].name, oldCost: oldCost, newCost: newCost, changePct: pct });
+      }
+      Object.keys(oldCosts).forEach(function (id) { consider(id, oldCosts[id], num(ings[id] && ings[id].costPerUnit)); });
+      prepChanges.forEach(function (c) { consider(c.id, c.oldCost, c.newCost); });
+      var out = { ingredients: moved, dishes: [] };
+      if (!moved.length) return out;
+      var target = num(settings().targetFoodCostPct);
+      var before = byId(dishesBefore);
+      menuWithCost().forEach(function (d) {
+        if (!d.active || !before[d.id]) return;
+        var uses = d.recipe.some(function (l) { return seen[l.ingredientId]; });
+        if (!uses) return;
+        out.dishes.push({ id: d.id, name: d.name, oldCost: round(before[d.id].foodCost, 2), newCost: round(d.foodCost, 2),
+          foodCostPct: d.foodCostPct, overTarget: d.foodCostPct !== null && d.foodCostPct > target });
+      });
+      out.dishes.sort(function (a, b) { return (b.newCost - b.oldCost) - (a.newCost - a.oldCost); });
+      return out;
     }
 
     A['purchases.add'] = { role: 'staff', write: true, fn: function (p, user) {
@@ -705,21 +862,126 @@ var RestoCore = (function () {
     A['movements.void'] = { role: 'manager', write: true, fn: function (p, user) {
       var row = findOrFail('StockMovements', p.id, 'Stock entry');
       if (row.type === 'sale') fail('VALIDATION', 'Sale deductions are removed by voiding the sale itself.');
+      if (row.type === 'production' || row.type === 'produce' || row.type === 'byproduct') fail('VALIDATION', 'Production entries are removed by voiding the production run.');
       voidRow('StockMovements', p.id, user, 'Stock entry'); return true;
     } };
 
     /* Master data */
+    function checkYield(v) {
+      var n = Number(v);
+      if (!isFinite(n) || n < 1 || n > 1000) fail('VALIDATION', 'Yield must be between 1 and 1000 %.');
+      return n;
+    }
     A['ingredients.save'] = { role: 'manager', write: true, fn: function (p, user) {
       var d = p.item || {};
+      var kind = trim(d.kind) === 'prep' ? 'prep' : 'raw';
+      var yieldPct = trim(d.yieldPct) === '' ? '' : checkYield(d.yieldPct);
       var data = { id: trim(d.id), version: d.version, name: reqStr(d.name, 'Name', 80), category: optStr(d.category, 60),
-        unit: reqStr(d.unit, 'Unit', 20), costPerUnit: round(reqNum(d.costPerUnit, 'Cost per unit', { min: 0 }), 4),
+        unit: reqStr(d.unit, 'Unit', 20), costPerUnit: kind === 'prep' ? 0 : round(reqNum(d.costPerUnit, 'Cost per unit', { min: 0 }), 4),
         minLevel: round(reqNum(d.minLevel, 'Minimum level', { min: 0 }), 3), supplierId: trim(d.supplierId),
         parLevel: d.parLevel === '' || d.parLevel === undefined || d.parLevel === null ? '' : round(reqNum(d.parLevel, 'Par level', { min: 0 }), 3),
-        active: d.active === undefined ? true : bool(d.active) };
+        active: d.active === undefined ? true : bool(d.active),
+        yieldPct: yieldPct, kind: kind, batchQty: '',
+        trackStock: d.trackStock === undefined || trim(d.trackStock) === '' ? true : bool(d.trackStock),
+        shelfLifeDays: optInt(d.shelfLifeDays, 'Shelf life (days)') };
+      if (kind === 'prep') data.batchQty = round(reqNum(d.batchQty, 'Batch quantity', { positive: true }), 4);
+      else data.trackStock = true;
       if (data.supplierId) findOrFail('Suppliers', data.supplierId, 'Supplier');
       if (data.active) assertUnique('Ingredients', 'name', data.name, data.id, 'Ingredient');
+
+      var units = (p.units || []).map(function (u) {
+        var unit = reqStr(u.unit, 'Conversion unit', 20);
+        var factor = Number(u.factor);
+        if (u.factor === '' || u.factor === null || u.factor === undefined || !isFinite(factor) || factor <= 0) {
+          fail('VALIDATION', 'Conversion factor must be greater than 0.');
+        }
+        if (RestoCosting.sameUnit(unit, data.unit)) fail('VALIDATION', "A conversion can't use the stock unit itself.");
+        return { unit: RestoCosting.unitCode(unit) || unit, factor: factor };
+      });
+
+      var current = data.id ? findOrFail('Ingredients', data.id, 'Ingredient "' + data.name + '"') : null;
+      var tempId = data.id || '__new__';
+      var allIngs = byId(db.read('Ingredients'));
+      var lines = [];
+      if (kind === 'prep') {
+        var seen = {};
+        lines = (p.prepRecipe || []).map(function (l, i) {
+          var ing = allIngs[l.ingredientId];
+          if (!ing && data.id && l.ingredientId === data.id) ing = data;
+          if (!ing) fail('VALIDATION', 'Recipe line ' + (i + 1) + ': choose an ingredient.');
+          if (seen[l.ingredientId]) fail('VALIDATION', ing.name + ' is in the recipe twice.');
+          seen[l.ingredientId] = true;
+          var ly = trim(l.yieldPct) === '' ? '' : checkYield(l.yieldPct);
+          var unit = trim(l.unit) || ing.unit;
+          return { ingredientId: l.ingredientId, qty: round(reqNum(l.qty, 'Recipe line ' + (i + 1) + ' quantity', { positive: true }), 4),
+            unit: RestoCosting.unitCode(unit) || unit, yieldPct: ly, note: optStr(l.note, 120) };
+        });
+        if (!lines.length) fail('VALIDATION', 'A prep needs at least one recipe line.');
+      }
+
+      // Validate against a book that already contains this item with its new lines/conversions.
+      var override = { id: tempId, name: data.name, unit: data.unit, costPerUnit: num(current && current.costPerUnit),
+        yieldPct: data.yieldPct === '' ? 100 : data.yieldPct, kind: kind, batchQty: num(data.batchQty),
+        trackStock: data.trackStock, conversions: units, prepLines: lines };
+      var book = loadBook(override);
+      // Every stored prep line and dish recipe line (not just this item's) must still convert after this edit.
+      function cantConvert(l, usedIn) {
+        var bi = book.byId[l.ingredientId];
+        var u = trim(l.unit) || bi.unit;
+        fail('VALIDATION', "Can't convert " + u + ' to ' + bi.unit + ' for ' + bi.name + '. Add a conversion on the ingredient. Used in ' + usedIn + '.');
+      }
+      Object.keys(book.byId).forEach(function (pid) {
+        (book.byId[pid].prepLines || []).forEach(function (l) {
+          if (RestoCosting.lineCost(l, book, {}).error === 'unit') cantConvert(l, book.byId[pid].name);
+        });
+      });
+      var menuNames = {};
+      db.read('Menu').forEach(function (m) { menuNames[m.id] = m.name; });
+      db.read('Recipes').forEach(function (r) {
+        if (!book.byId[r.ingredientId] || menuNames[r.menuItemId] === undefined) return;
+        var l = { ingredientId: r.ingredientId, qty: r.qty, unit: trim(r.unit) || book.byId[r.ingredientId].unit, yieldPct: r.yieldPct };
+        if (RestoCosting.lineCost(l, book, {}).error === 'unit') cantConvert(l, menuNames[r.menuItemId]);
+      });
+      var costs = prepCostsOrFail(book);
+      // An existing prep keeps its stored cost here; syncPrepCosts below moves it and logs the change.
+      if (kind === 'prep') {
+        data.costPerUnit = current && trim(current.kind) === 'prep' ? num(current.costPerUnit) : round(costs[tempId] || 0, 4);
+      }
+
       if (!data.id) delete data.id;
-      return saveRow('Ingredients', 'ING', data, user, 'Ingredient "' + data.name + '"');
+      var saved = saveRow('Ingredients', 'ING', data, user, 'Ingredient "' + data.name + '"');
+      if (current) recordCostChange(saved.id, current.costPerUnit, saved.costPerUnit, 'manual', saved.id, user);
+      db.removeWhere('IngredientUnits', function (r) { return r.ingredientId === saved.id; });
+      if (units.length) {
+        db.append('IngredientUnits', units.map(function (u) {
+          return { id: newId('IUN'), ingredientId: saved.id, unit: u.unit, factor: u.factor };
+        }));
+      }
+      db.removeWhere('PrepRecipes', function (r) { return r.prepId === saved.id; });
+      if (lines.length) {
+        db.append('PrepRecipes', lines.map(function (l) {
+          return { id: newId('PRL'), prepId: saved.id, ingredientId: l.ingredientId, qty: l.qty, unit: l.unit,
+            yieldPct: l.yieldPct, note: l.note };
+        }));
+      }
+      syncPrepCosts(user, 'prep', saved.id);
+      return db.read('Ingredients').filter(function (r) { return r.id === saved.id; })[0];
+    } };
+
+    A['ingredients.costHistory'] = { role: 'manager', write: false, fn: function (p) {
+      var id = trim(p.id);
+      var rows = db.read('CostChanges').map(function (r, i) { r._i = i; return r; })
+        .filter(function (r) { return r.ingredientId === id; });
+      rows.sort(function (a, b) {
+        if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+        if (a.createdAt !== b.createdAt) return a.createdAt < b.createdAt ? 1 : -1;
+        return b._i - a._i;
+      });
+      return rows.slice(0, num(p.limit) || 50).map(function (r) {
+        var o = num(r.oldCost), n = num(r.newCost);
+        return { date: r.date, oldCost: o, newCost: n, changePct: o === 0 ? null : round((n - o) / o * 100, 1),
+          source: r.source, refId: r.refId || '' };
+      });
     } };
 
     A['suppliers.save'] = { role: 'manager', write: true, fn: function (p, user) {
@@ -745,15 +1007,23 @@ var RestoCore = (function () {
         if (!ingredients[l.ingredientId]) fail('VALIDATION', 'Recipe line ' + (i + 1) + ': choose an ingredient.');
         if (seen[l.ingredientId]) fail('VALIDATION', ingredients[l.ingredientId].name + ' is in the recipe twice.');
         seen[l.ingredientId] = true;
+        var ly = trim(l.yieldPct) === '' ? '' : checkYield(l.yieldPct);
+        var unit = trim(l.unit);
         return { ingredientId: l.ingredientId, qty: round(reqNum(l.qty, 'Recipe line ' + (i + 1) + ' quantity', { positive: true }), 4),
-          note: optStr(l.note, 120) };
+          unit: unit ? (RestoCosting.unitCode(unit) || unit) : '', yieldPct: ly, note: optStr(l.note, 120) };
+      });
+      var cbook = loadBook();
+      recipe.forEach(function (l) {
+        var ing = cbook.byId[l.ingredientId];
+        var r = RestoCosting.lineCost({ ingredientId: l.ingredientId, qty: l.qty, unit: l.unit || ing.unit, yieldPct: l.yieldPct }, cbook, {});
+        if (r.error === 'unit') fail('VALIDATION', "Can't convert " + (l.unit || ing.unit) + ' to ' + ing.unit + ' for ' + ing.name + '. Add a conversion on the ingredient.');
       });
       if (!data.id) delete data.id;
       var saved = saveRow('Menu', 'MENU', data, user, 'Dish "' + data.name + '"');
       db.removeWhere('Recipes', function (r) { return r.menuItemId === saved.id; });
       if (recipe.length) {
         db.append('Recipes', recipe.map(function (l) {
-          return { id: newId('REC'), menuItemId: saved.id, ingredientId: l.ingredientId, qty: l.qty, note: l.note };
+          return { id: newId('REC'), menuItemId: saved.id, ingredientId: l.ingredientId, qty: l.qty, note: l.note, unit: l.unit, yieldPct: l.yieldPct };
         }));
       }
       return menuWithCost().filter(function (m) { return m.id === saved.id; })[0];
@@ -767,6 +1037,7 @@ var RestoCore = (function () {
       if (!lines.length) fail('VALIDATION', 'Enter a quantity for at least one dish.');
       var menu = byId(menuWithCost());
       var ingredients = byId(db.read('Ingredients'));
+      var book = loadBook();
       var ts = nowIso();
       var sales = [], moves = [], noRecipe = [];
       lines.forEach(function (l, i) {
@@ -782,12 +1053,14 @@ var RestoCore = (function () {
         if (!item.recipe.length) noRecipe.push(item.name);
         // Each dish sold deducts its recipe ingredients from stock.
         item.recipe.forEach(function (r) {
-          var ing = ingredients[r.ingredientId];
-          if (!ing) return;
-          var q = round(-r.qty * qty, 4);
-          moves.push({ id: newId('MOV'), date: date, ingredientId: r.ingredientId, type: 'sale', qty: q,
-            unitCost: round(num(ing.costPerUnit), 4), value: round(q * num(ing.costPerUnit)),
-            reason: qty + ' × ' + item.name, refId: sale.id, voided: false, createdAt: ts, createdBy: user.username });
+          RestoCosting.explode({ ingredientId: r.ingredientId, qty: r.qty, unit: r.unit, yieldPct: r.yieldPct }, qty, book).forEach(function (x) {
+            var ing = ingredients[x.ingredientId];
+            if (!ing) return;
+            var q = round(-x.qty, 4);
+            moves.push({ id: newId('MOV'), date: date, ingredientId: x.ingredientId, type: 'sale', qty: q,
+              unitCost: round(num(ing.costPerUnit), 4), value: round(q * num(ing.costPerUnit)),
+              reason: qty + ' × ' + item.name, refId: sale.id, voided: false, createdAt: ts, createdBy: user.username });
+          });
         });
       });
       db.append('Sales', sales);
@@ -813,6 +1086,114 @@ var RestoCore = (function () {
     A['sales.void'] = { role: 'manager', write: true, fn: function (p, user) {
       voidRow('Sales', p.id, user, 'Sale');
       db.updateWhere('StockMovements', function (r) { return r.refId === p.id && r.type === 'sale'; }, { voided: true });
+      return true;
+    } };
+
+    /* Production runs */
+    function mergeQty(list) {
+      var acc = {}, order = [];
+      list.forEach(function (x) {
+        if (!Object.prototype.hasOwnProperty.call(acc, x.ingredientId)) { acc[x.ingredientId] = 0; order.push(x.ingredientId); }
+        acc[x.ingredientId] += x.qty;
+      });
+      return order.map(function (id) { return { ingredientId: id, qty: round(acc[id], 4) }; });
+    }
+    function convertLine(l, ingredients, book, label) {
+      var ing = ingredients[l.ingredientId];
+      if (!ing) fail('VALIDATION', label + ': choose an ingredient.');
+      var q = reqNum(l.qty, label + ' quantity', { positive: true });
+      var conv = RestoCosting.convertQty(q, trim(l.unit) || ing.unit, book.byId[ing.id]);
+      if (conv === null) fail('VALIDATION', "Can't convert " + l.unit + ' to ' + ing.unit + ' for ' + ing.name + '. Add a conversion on the ingredient.');
+      return { ingredientId: ing.id, qty: conv };
+    }
+    A['production.add'] = { role: 'staff', write: true, fn: function (p, user) {
+      var date = reqDate(p.date);
+      var ingredients = byId(db.read('Ingredients'));
+      var book = loadBook();
+      var prep = ingredients[trim(p.prepId)];
+      if (!prep || trim(prep.kind) !== 'prep') fail('VALIDATION', 'Choose a prep item to produce.');
+      if (prep.trackStock === false) fail('VALIDATION', prep.name + " is made to order and isn't kept in stock.");
+      var batches = reqNum(p.batches, 'Batches', { positive: true });
+      var produced = reqNum(p.producedQty, 'Quantity made', { positive: true });
+      var by = trim(p.producedBy) || user.username;
+      var maker = active(db.read('Users')).filter(function (u) { return u.username === by; })[0];
+      if (!maker) fail('VALIDATION', 'Choose who made it.');
+      var bp = book.byId[prep.id];
+      var inputs;
+      if (p.inputs && p.inputs.length) {
+        var acc = [];
+        p.inputs.forEach(function (l, i) {
+          var c = convertLine(l, ingredients, book, 'Input ' + (i + 1));
+          var bi = book.byId[c.ingredientId];
+          if (bi && bi.kind === 'prep' && bi.trackStock === false) {
+            RestoCosting.explode({ ingredientId: c.ingredientId, qty: c.qty, unit: bi.unit, yieldPct: 100 }, 1, book).forEach(function (x) { acc.push(x); });
+          } else acc.push(c);
+        });
+        inputs = mergeQty(acc);
+      } else {
+        var dflt = [];
+        (bp.prepLines || []).forEach(function (line) {
+          RestoCosting.explode(line, batches, book).forEach(function (x) { dflt.push(x); });
+        });
+        inputs = mergeQty(dflt);
+      }
+      var byproducts = [];
+      (p.byproducts || []).forEach(function (l, i) {
+        if (trim(l.ingredientId) === prep.id) fail('VALIDATION', "A by-product can't be the item being produced.");
+        var bpi = ingredients[trim(l.ingredientId)];
+        if (bpi && trim(bpi.kind) === 'prep' && bpi.trackStock === false) fail('VALIDATION', bpi.name + " is made to order and isn't kept in stock.");
+        byproducts.push(convertLine(l, ingredients, book, 'By-product ' + (i + 1)));
+      });
+      byproducts = mergeQty(byproducts);
+      var costOf = function (id) { return ingredients[id] ? num(ingredients[id].costPerUnit) : 0; };
+      var rc = RestoCosting.runCost({ inputs: inputs, byproducts: byproducts, producedQty: produced }, costOf);
+      var onHand = onHandMap();
+      var warnings = [];
+      inputs.forEach(function (x) {
+        var have = onHand[x.ingredientId] || 0;
+        if (x.qty > have) warnings.push({ ingredientId: x.ingredientId, name: ingredients[x.ingredientId].name, onHand: round(have, 3), needed: x.qty });
+      });
+      var ts = nowIso();
+      var expected = round(num(bp.batchQty) * batches, 4);
+      var runNo = formatRunNo(db.read('ProductionRuns').length + 1);
+      var run = { id: newId('RUN'), runNo: runNo, date: date, prepId: prep.id, batches: batches, expectedQty: expected,
+        producedQty: produced, unit: prep.unit, inputCost: rc.inputCost, byproductValue: rc.byproductValue,
+        totalCost: rc.totalCost, unitCost: rc.unitCost, yieldPct: expected > 0 ? round(produced / expected * 100, 1) : '',
+        producedBy: maker.username, note: optStr(p.note, 200), voided: false, createdAt: ts, createdBy: user.username };
+      var moves = [];
+      function mv(id, type, qty, unitCost, value) {
+        moves.push({ id: newId('MOV'), date: date, ingredientId: id, type: type, qty: qty, unitCost: unitCost, value: value,
+          reason: runNo, refId: run.id, voided: false, createdAt: ts, createdBy: user.username });
+      }
+      inputs.forEach(function (x) { mv(x.ingredientId, 'production', -x.qty, round(costOf(x.ingredientId), 4), round(-x.qty * costOf(x.ingredientId))); });
+      mv(prep.id, 'produce', produced, rc.unitCost, round(produced * rc.unitCost));
+      byproducts.forEach(function (x) { mv(x.ingredientId, 'byproduct', x.qty, round(costOf(x.ingredientId), 4), round(x.qty * costOf(x.ingredientId))); });
+      db.append('ProductionRuns', [run]);
+      db.append('StockMovements', moves);
+      return { run: run, warnings: warnings };
+    } };
+
+    A['production.list'] = { role: 'staff', write: false, fn: function (p) {
+      var ings = byId(db.read('Ingredients'));
+      var users = {};
+      db.read('Users').forEach(function (u) { users[u.username] = u.displayName; });
+      return db.read('ProductionRuns').filter(function (r) {
+        return inRange(r.date, p.from, p.to) && (!p.prepId || r.prepId === p.prepId);
+      }).sort(newestFirst).slice(0, num(p.limit) || 300).map(function (r) {
+        var o = {};
+        SCHEMA.ProductionRuns.forEach(function (c) { o[c] = r[c]; });
+        ['batches', 'expectedQty', 'producedQty', 'inputCost', 'byproductValue', 'totalCost', 'unitCost'].forEach(function (c) { o[c] = num(r[c]); });
+        o.yieldPct = r.yieldPct === '' ? '' : num(r.yieldPct);
+        o.voided = bool(r.voided);
+        o.prepName = (ings[r.prepId] || {}).name || '?';
+        o.producedByName = users[r.producedBy] || r.producedBy;
+        return o;
+      });
+    } };
+
+    A['production.void'] = { role: 'manager', write: true, fn: function (p, user) {
+      var row = voidRow('ProductionRuns', p.id, user, 'Production run');
+      db.updateWhere('StockMovements', function (r) { return r.refId === row.id; }, { voided: true });
       return true;
     } };
 
@@ -1026,7 +1407,7 @@ var RestoCore = (function () {
     A['po.suggestions'] = { role: 'manager', write: false, fn: function () {
       var groups = {};
       var sups = byId(db.read('Suppliers'));
-      stockLevels().filter(function (i) { return i.active && i.minLevel > 0; }).forEach(function (i) {
+      stockLevels().filter(function (i) { return i.active && i.minLevel > 0 && i.kind !== 'prep'; }).forEach(function (i) {
         if (i.onHand + i.onOrder > i.minLevel) return;
         var par = i.parLevel > i.minLevel ? i.parLevel : i.minLevel * 2;
         var qty = round(par - i.onHand - i.onOrder, 2);
@@ -1089,6 +1470,7 @@ var RestoCore = (function () {
       var lines = (p.lines || []).filter(function (l) { return l.ingredientId || l.qtyOrdered; }).map(function (l, i) {
         var ing = ings[l.ingredientId];
         if (!ing) fail('VALIDATION', 'Line ' + (i + 1) + ': choose an ingredient.');
+        if (trim(ing.kind) === 'prep') fail('VALIDATION', 'Line ' + (i + 1) + ': ' + ing.name + ' is made in the kitchen. Record a production run instead.');
         if (seen[ing.id]) fail('VALIDATION', ing.name + ' is on the order twice.');
         seen[ing.id] = true;
         return { ingredientId: ing.id, qtyOrdered: round(reqNum(l.qtyOrdered, 'Line ' + (i + 1) + ' quantity', { positive: true }), 3),
@@ -1169,7 +1551,7 @@ var RestoCore = (function () {
       var r = addPurchases({ date: p.date, supplierId: po.supplierId, invoiceRef: p.deliveryRef, note: p.note, poId: po.id }, lines, user);
       if (po.status === 'draft') markSent(po.id, user);
       r.status = refreshPoStatus(po.id, user);
-      return r;
+      return r; // r.impact (cost impact on dishes) passes through
     } };
 
     /* ---------- supplier invoices & 3-way matching ---------- */
@@ -1508,6 +1890,7 @@ var RestoCore = (function () {
     SCHEMA: SCHEMA,
     TEXT_COLUMNS: TEXT_COLUMNS,
     translate: translate,
+    formatRunNo: formatRunNo,
     DEFAULT_SETTINGS: DEFAULT_SETTINGS,
     ROLES: ROLES,
     MOVEMENT_TYPES: MOVEMENT_TYPES,

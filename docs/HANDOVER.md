@@ -1,7 +1,7 @@
 # Restaurant Ops: Developer Handover
 
-**Version:** 1.2.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
-**Status (2026-11-13):** feature-complete v1. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. No git commits yet.
+**Version:** 1.3.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
+**Status (2026-11-13):** feature-complete v1. **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
 
 This document is for the developer taking over the project. For end-user setup, see [README.md](../README.md).
 
@@ -14,7 +14,8 @@ A phone app for a restaurant's back office:
 | Area | What users do |
 |---|---|
 | Stock | Log purchases (stock in), usage, waste (reason required), stock counts, adjustments. See levels, value, low-stock alerts. |
-| Recipe costing | Each dish has a recipe (ingredients per portion). Shows food cost, food cost %, margin, and the price needed to hit the target %. A sale deducts the recipe from stock. |
+| Recipe costing | Each dish has a recipe (ingredients per portion, in any unit that converts, e.g. grams for an ingredient bought by the kg). Recipes use the usable amount; the ingredient's yield adds the trim loss. Shows food cost, food cost %, margin, the share of each line, and the price needed to hit the target %. A sale deducts the recipe from stock. |
+| Preps and production | Sauces, stocks and pastes made in the kitchen are prep items with their own recipe and batch size. Their cost follows their ingredients. Each batch made is a production run: ingredients out, prep in, real yield and cost. Each ingredient keeps a cost history; a delivery that moves costs shows which dishes it affects. |
 | Sales | Daily entry per dish and per channel (Dine-in / Takeaway / Delivery). |
 | Expenses | Rent, wages, utilities and so on. |
 | Reports | Dashboard: revenue, today's sales, food cost % vs target, net profit, stock value, daily cash flow chart, top sellers, monthly P&L, 6-month summary. |
@@ -55,7 +56,7 @@ A phone app for a restaurant's back office:
 
 ```
 app/                         ← deployable PWA (Vercel Root Directory = this folder)
-  index.html                 shell; loads config.js, core.js, then js/app.js (module)
+  index.html                 shell; loads config.js, costing.js, core.js, then js/app.js (module)
   config.js                  RESTO_CONFIG.apiUrl, the Apps Script /exec URL (optional)
   manifest.webmanifest       PWA manifest
   sw.js                      service worker: network-first, offline fallback to cache
@@ -64,6 +65,7 @@ app/                         ← deployable PWA (Vercel Root Directory = this fo
   css/app.css                design system (tokens, light/dark, components)
   icons/                     PNG + SVG icons (regenerate: tools/make_icons.py)
   js/core.js                 ★ ALL business rules + schema (shared with server)
+  js/costing.js              pure costing maths: units, conversion, yield, prep costs, explode, run cost (shared with server)
   js/api.js                  API client: remote (fetch) or demo transport; session storage
   js/demo.js                 demo backend (core.js + localStorage) and sample-data seeder
   js/i18n.js                 English + Thai dictionaries, default lists, t(), locale()
@@ -73,22 +75,28 @@ app/                         ← deployable PWA (Vercel Root Directory = this fo
   js/views/home.js           dashboard (manager+) / today view (staff)
   js/views/stock.js          levels, history, stock-in/usage/waste/count forms, ingredient editor
   js/views/sales.js          daily sales, entry sheet, voids
-  js/views/menu.js           dishes, recipe editor with live costing
+  js/views/menu.js           Menu hub: Dishes | Preps, dish editor with live costing
+  js/views/recipe-lines.js   shared recipe-line editor (dishes and preps): unit picker, yield, line cost
+  js/views/production.js     Produce batch sheet and the production log (#/more/production)
+  js/views/purchasing.js     orders, receiving, supplier invoices, payables
   js/views/more.js           expenses, suppliers, team, settings, account, install help
 backend/                     ← Google Apps Script project
   Server.gs                  doPost/doGet, Sheets storage, locks, sessions, setup()
   Core.gs                    GENERATED copy of app/js/core.js
+  Costing.gs                 GENERATED copy of app/js/costing.js
   appsscript.json            manifest (timezone Asia/Bangkok, V8, web app settings)
 tools/
   serve.py                   local preview server (http://localhost:5173)
-  build_backend.py           core.js → backend/Core.gs
+  build_backend.py           core.js → backend/Core.gs, costing.js → backend/Costing.gs
+  test_core.js               test runner for core.js + costing.js (node tools/test_core.js)
+  tests/*.test.js            the tests, against an in-memory db
   check_i18n.py              fails if any text key is missing in EN or TH
   make_icons.py              regenerates PNG icons (stdlib only)
 docs/HANDOVER.md             this file
 README.md                    user-facing setup guide
 ```
 
-About 4,500 lines of code. No external runtime dependencies.
+About 6,000 lines of code. No external runtime dependencies.
 
 ---
 
@@ -101,11 +109,15 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | **Settings** | key, value, updatedAt, updatedBy | Key/value pairs (see below) |
 | **Users** | id, username, displayName, role, passwordHash, salt, active, createdAt, updatedAt, updatedBy, version | role ∈ owner/manager/staff |
 | **Suppliers** | id, name, contactName, phone, email, notes, active, createdAt, updatedAt, updatedBy, version | |
-| **Ingredients** | id, name, category, unit, costPerUnit, minLevel, supplierId, active, createdAt, updatedAt, updatedBy, version | `costPerUnit` is updated by purchases |
+| **Ingredients** | id, name, category, unit, costPerUnit, minLevel, supplierId, active, createdAt, updatedAt, updatedBy, version, parLevel, yieldPct, kind, batchQty, trackStock, shelfLifeDays | `costPerUnit` is updated by purchases (raw) or recomputed from the recipe (prep). kind ∈ raw/prep (blank = raw) |
+| **IngredientUnits** | id, ingredientId, unit, factor | Other units: 1 `unit` = `factor` × stock unit. Replaced as a whole on each `ingredients.save` |
+| **PrepRecipes** | id, prepId, ingredientId, qty, unit, yieldPct, note | Lines of a prep (raw items or other preps). Replaced as a whole on each `ingredients.save` |
+| **CostChanges** | id, date, ingredientId, oldCost, newCost, source, refId, createdAt, createdBy | One row each time a cost moves. source ∈ purchase/prep/manual |
+| **ProductionRuns** | id, runNo, date, prepId, batches, expectedQty, producedQty, unit, inputCost, byproductValue, totalCost, unitCost, yieldPct, producedBy, note, voided, createdAt, createdBy | One row per batch made. `runNo` is PR-0001, PR-0002 … `producedBy` is who cooked it |
 | **Purchases** | id, date, supplierId, ingredientId, qty, unitCost, total, invoiceRef, note, voided, createdAt, createdBy | Stock **in**; one row per line |
 | **StockMovements** | id, date, ingredientId, type, qty, unitCost, value, reason, refId, voided, createdAt, createdBy | Everything except purchases |
 | **Menu** | id, name, category, price, active, createdAt, updatedAt, updatedBy, version | |
-| **Recipes** | id, menuItemId, ingredientId, qty, note | Replaced as a whole on each `menu.save` |
+| **Recipes** | id, menuItemId, ingredientId, qty, note, unit, yieldPct | Replaced as a whole on each `menu.save`. `qty` is the net (usable) amount. Blank unit = the ingredient's unit; blank yield = the ingredient's yield |
 | **Sales** | id, date, menuItemId, itemName, qty, unitPrice, total, unitCost, costTotal, channel, note, voided, createdAt, createdBy | `unitCost` is a **snapshot** of the dish cost at the time of sale |
 | **Expenses** | id, date, category, description, amount, paymentMethod, note, voided, createdAt, createdBy | |
 | **PurchaseOrders** | id, poNumber, supplierId, status, orderDate, expectedDate, note, total, sentAt, sentBy, closedAt, closedBy, closeReason, createdAt, createdBy, updatedAt, updatedBy, version | status: draft → sent → partial → received; or closed (short) / cancelled |
@@ -113,7 +125,7 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | **SupplierInvoices** | id, invoiceNo, supplierId, poId, invoiceDate, dueDate, subtotal, vat, total, status, exceptionCount, varianceAmount, reviewNote, reviewedAt, reviewedBy, paidAt, paidBy, paymentMethod, paymentRef, note, createdAt, createdBy, updatedAt, updatedBy, version | status: matched / exception / noPo → approved / disputed → paid |
 | **SupplierInvoiceLines** | id, invoiceId, ingredientId, qty, unitPrice, total | |
 
-**Columns added in v1.2 (appended, so old sheets upgrade in place):** Suppliers `leadTimeDays`, `paymentTermsDays`; Ingredients `parLevel`; Purchases `poId`, `poLineId`. `Server.gs` → `prepareTab_()` adds missing tabs and columns automatically on first use (and in `setup()`). It refuses to touch a tab whose existing headers differ.
+**Columns added in v1.2 (appended, so old sheets upgrade in place):** Suppliers `leadTimeDays`, `paymentTermsDays`; Ingredients `parLevel`; Purchases `poId`, `poLineId`. **Added in v1.3:** Ingredients `yieldPct`, `kind`, `batchQty`, `trackStock`, `shelfLifeDays`; Recipes `unit`, `yieldPct`; new tabs IngredientUnits, PrepRecipes, CostChanges, ProductionRuns. `Server.gs` → `prepareTab_()` adds missing tabs and columns automatically on first use (and in `setup()`). It refuses to touch a tab whose existing headers differ.
 
 **Quantity received is never stored on the PO.** It is always the sum of non-voided `Purchases` rows with that `poLineId`. Voiding a receipt re-opens the order (`refreshPoStatus`).
 
@@ -125,10 +137,14 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | `waste` | negative | staff; reason required |
 | `count` | counted − on hand (±) | stock count; zero-difference lines are skipped |
 | `adjustment` | ± as entered | manager only |
-| `sale` | −(recipe qty × dishes sold) | automatic on `sales.add`; `refId` = Sales.id; voided together with the sale |
+| `sale` | −(gross recipe qty × dishes sold) | automatic on `sales.add`; `refId` = Sales.id; voided together with the sale. A prep not kept in stock is replaced by its own ingredients |
+| `production` | negative | automatic on `production.add`: each ingredient used (gross); `refId` = run id |
+| `produce` | positive | the prep made, valued at the run's actual unit cost |
+| `byproduct` | positive | something useful left over (e.g. chicken fat from stock), valued at its cost |
 
 **Conventions**
-- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR).
+- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN).
+- Units in recipe, prep and conversion lines are stored as a unit code (`g`, `kg`, `ml`, `l`, `pcs` …) when the text is a known unit or alias, otherwise as typed. An ingredient's own stock unit is stored as typed (`กก.` in Thai).
 - Dates are `YYYY-MM-DD` text; timestamps are ISO-8601 text. `TEXT_COLUMNS` are formatted as plain text by `setup()` so Sheets doesn't convert them. `Server.gs` also converts any `Date` cells back on read.
 - Booleans are `TRUE`/`FALSE`. Read them with `bool()` in core.
 
@@ -156,11 +172,23 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 **Stock and P&L**
 
 - **Stock on hand** = Σ Purchases.qty + Σ StockMovements.qty (non-voided).
-- **Status:** `out` if on hand ≤ 0; `low` if ≤ minLevel; otherwise `ok`.
+- **Status:** `out` if on hand ≤ 0; `low` if ≤ minLevel; otherwise `ok`. A prep not kept in stock is always `ok`.
 - **Ingredient cost** on each purchase:
   - `average` (default): (onHand × oldCost + qty × unitCost) / (onHand + qty). Falls back to the purchase price if on hand ≤ 0.
   - `last`: unitCost.
-- **Dish food cost** = Σ(recipe qty × ingredient costPerUnit). **Food cost %** = cost / price.
+- **Dish food cost** = Σ line cost (below). **Food cost %** = cost / price.
+
+**Costing (v1.3, maths in `costing.js`)**
+
+- **Units:** a built-in catalogue in three families: mass (`mg, g, kg, oz, lb`), volume (`ml, l, tsp, tbsp, cup, floz, pt, qt, gal`, US measures) and count (`pcs, dozen`). Aliases map free text to codes, ignoring case and a trailing dot (`กก.` → kg, `ลิตร` → l, `ฟอง` → pcs). Any other text (`bottle`, `ขวด`) is a custom unit of its own.
+- **Conversion** (`convertQty`) into the ingredient's stock unit: same unit 1:1; same family by factor; otherwise through the ingredient's own conversions (`1 bottle = 0.7 L`, `1 g = 1/55 pcs` for eggs). If nothing fits, saving says "Can't convert … Add a conversion on the ingredient."
+- **Yield:** `yieldPct` 1–1000 (blank = 100; above 100 for rice or beans that swell). Recipe quantities are **net** (usable). **Gross** = net ÷ (yield / 100). A recipe line may override the ingredient's yield.
+- **Line cost** = gross qty in stock units × costPerUnit. Stock is deducted by the gross qty.
+- **Prep cost per unit** = Σ line costs ÷ batchQty, recursive (preps can use preps, at most 4 levels deep; cycles are refused). It is the **theoretical** recipe cost: recomputed on prep save and whenever a purchase moves an ingredient inside it (a CostChanges row with source `prep`). Production runs never change it.
+- **Prep kept in stock** (`trackStock` TRUE): a sale deducts the prep. **Made to order** (FALSE): a sale deducts the prep's own ingredients (`explode`).
+- **Production run** (`runCost`): inputs default to recipe × batches (gross, converted), or what the cook entered. inputCost = Σ input qty × current cost; by-products are credited at their current cost; totalCost = inputCost − by-product value (not below 0); unitCost = totalCost ÷ producedQty; yieldPct = produced ÷ (batchQty × batches). Inputs that go below zero give a warning, not a block. Voiding a run voids all its movements; it does not roll back weighted-average costs.
+- **Actual vs recipe:** the prep screen shows the mean unit cost of the last 5 runs next to the recipe cost.
+- **Cost impact:** `purchases.add` and `po.receive` return which ingredients moved by 1 % or more and which active dishes now cost more or less, including dishes that use them through a prep.
 - **Reports (`reports.summary`)** for a month:
   - Revenue = Σ Sales.total
   - COGS = Σ Sales.costTotal (the snapshot)
@@ -183,26 +211,30 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 | `auth.login` | none | ✓ | username, password → `{ token, user }` |
 | `auth.logout` | staff | | none |
 | `auth.changePassword` | staff | ✓ | current, next |
-| `bootstrap` | staff | | none → user, settings, ingredients (with stock), suppliers, menu (with cost and recipe), users (owner only) |
+| `bootstrap` | staff | | none → user, settings, ingredients (with stock, yield, conversions, prep lines), suppliers, menu (with cost and recipe breakdown), users (owner only), team (active people, for "made by") |
 | `stock.levels` | staff | | none |
-| `purchases.add` | staff | ✓ | date, supplierId?, invoiceRef?, note?, lines[{ingredientId, qty, unitCost}] (max 60) |
+| `purchases.add` | staff | ✓ | date, supplierId?, invoiceRef?, note?, lines[{ingredientId, qty, unitCost}] (max 60; no preps) → also `impact` |
 | `purchases.list` | staff | | from?, to?, ingredientId?, limit? |
 | `purchases.void` | manager | ✓ | id |
 | `movements.add` | staff (adjustment: manager) | ✓ | date, type, reason, lines[{ingredientId, qty}] |
 | `movements.list` | staff | | from?, to?, type?, ingredientId?, includeSales?, limit? |
 | `movements.void` | manager | ✓ | id (not for `sale` rows) |
-| `ingredients.save` | manager | ✓ | item {id?, version?, name, unit, category, costPerUnit, minLevel, supplierId, active} |
+| `ingredients.save` | manager | ✓ | item {id?, version?, name, unit, category, costPerUnit, minLevel, parLevel, supplierId, active, yieldPct, kind, batchQty, trackStock, shelfLifeDays}, units[{unit, factor}] (1 unit = factor × stock unit), prepRecipe[{ingredientId, qty, unit, yieldPct, note}] (preps only; cost is computed) |
+| `ingredients.costHistory` | manager | | id, limit? → [{date, oldCost, newCost, changePct, source, refId}], newest first |
 | `suppliers.save` | manager | ✓ | item {id?, version?, name, contactName, phone, email, notes, active} |
-| `menu.save` | manager | ✓ | item {id?, version?, name, price, category, active}, recipe[{ingredientId, qty}] |
+| `menu.save` | manager | ✓ | item {id?, version?, name, price, category, active}, recipe[{ingredientId, qty (net), unit, yieldPct}] |
+| `production.add` | staff | ✓ | date, prepId, batches, producedQty, producedBy (username), note?, inputs?[{ingredientId, qty, unit}], byproducts?[{ingredientId, qty, unit}] → {run, warnings} |
+| `production.list` | staff | | from?, to?, prepId?, limit? |
+| `production.void` | manager | ✓ | id (also voids its movements) |
 | `sales.add` | staff | ✓ | date, channel, lines[{menuItemId, qty, unitPrice?}] → also writes `sale` movements |
 | `sales.list` | staff | | from, to |
 | `sales.void` | manager | ✓ | id (also voids its movements) |
 | `expenses.add` / `.list` / `.void` | manager | ✓ / – / ✓ | date, category, amount, description, paymentMethod, note |
-| `po.suggestions` | manager | | none → groups by supplier with suggested quantities |
+| `po.suggestions` | manager | | none → groups by supplier with suggested quantities (preps skipped; `po.save` refuses them) |
 | `po.list` / `po.get` | staff | | status (open/awaiting/draft/done/all/…), supplierId / id → PO with lines, receipts, invoices |
 | `po.save` | manager | ✓ | item {id?, version?, supplierId, orderDate, expectedDate?, note}, lines[{ingredientId, qtyOrdered, unitPrice}], send? (drafts only) |
 | `po.send` / `po.cancel` / `po.close` | manager | ✓ | id, reason? (cancel only without receipts; close only sent/partial) |
-| `po.receive` | staff | ✓ | poId, date, deliveryRef, note, lines[{poLineId, qty, unitPrice}] → stock-in rows + status |
+| `po.receive` | staff | ✓ | poId, date, deliveryRef, note, lines[{poLineId, qty, unitPrice}] → stock-in rows + status + `impact` |
 | `invoices.save` | manager | ✓ | item {id?, version?, supplierId, poId?, invoiceNo, invoiceDate, dueDate?, vat?, total?, note}, lines[{ingredientId, qty, unitPrice}] → invoice + match |
 | `invoices.list` / `invoices.get` | manager | | status (review/unpaid/disputed/paid/all), today / id → rows + payables summary / invoice + match |
 | `invoices.approve` / `.dispute` | manager | ✓ | id, note (required for exceptions and disputes) |
@@ -220,8 +252,8 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 2. If it needs a new tab or column, update `SCHEMA` and re-run `setup()`. **Append new columns at the end.**
 3. Add Thai translations of any new error messages to `TH_RULES` in `core.js`.
 4. Build the UI in `app/js/views/*`, and add text keys to **both** dictionaries in `i18n.js`.
-5. Run `python tools/build_backend.py` and `python tools/check_i18n.py`.
-6. Test in demo mode, then paste `Core.gs` into Apps Script and deploy a new version.
+5. Add tests in `tools/tests/`, then run `node tools/test_core.js`, `python tools/build_backend.py` and `python tools/check_i18n.py`.
+6. Test in demo mode, then paste `Core.gs` and `Costing.gs` into Apps Script and deploy a new version.
 
 ---
 
@@ -240,7 +272,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 
 ## 8. Frontend notes
 
-- **Routing:** hash routes such as `#/home`, `#/stock`, `#/sales`, `#/menu`, `#/more/expenses`. Deep links open forms: `#/stock/purchase|usage|waste|count`, `#/stock/low`, `#/stock/item/<id>`, `#/sales/new`, `#/more/expenses/new`.
+- **Routing:** hash routes such as `#/home`, `#/stock`, `#/sales`, `#/menu`, `#/more/expenses`. Deep links open forms: `#/stock/purchase|usage|waste|count`, `#/stock/low`, `#/stock/item/<id>`, `#/sales/new`, `#/more/expenses/new`, `#/more/production` (production log).
 - **State:** `state.boot` comes from `bootstrap`. After each successful write, a view calls `ctx.refresh()` and then re-renders itself. `ctx.stale()` guards against a slow response drawing into a screen the user has left.
 - **Bottom sheets** (`openSheet`) push a history entry, so the Android back button closes the sheet.
 - **Charts** are hand-built SVG with hover/tap tooltips. The colours come from a colour-blind-checked palette (`--series-1`, `--series-2`).
@@ -248,7 +280,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 - **Theme:** light, dark, or follow the system (`ro.theme` in localStorage).
 - **i18n:** `t(key, vars)` in `i18n.js`. Values are strings with `{var}` or functions (for English plurals). Thai mode formats with `th-TH` (Buddhist-era years). User data is stored exactly as typed. Server errors are translated in `core.js` (`translate()`).
 
-**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v1`.
+**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v2` (v1.3 changed the sample data, so old v1 demo data is ignored and the demo reseeds).
 
 ---
 
@@ -270,7 +302,13 @@ python tools/build_backend.py
 python tools/check_i18n.py
 ```
 
-There are **no automated tests yet** (see the backlog). Verification so far has been manual in the browser, plus scripted checks run through the browser console (hashing against WebCrypto, a conflict on concurrent edits, role permissions, stock deduction on sale, Thai error messages, no horizontal overflow at 375 px).
+```bash
+node tools/test_core.js
+```
+
+`test_core.js` runs every `tools/tests/*.test.js` against `core.js` and `costing.js` with an in-memory db (Node, no dependencies). The tests cover the costing maths, units, ingredients and preps, menu costing, production runs and cost impact. The UI is still checked by hand in the browser, in English and Thai, at phone size.
+
+The demo seeds 62 days of history: purchases, orders and invoices, daily sales, and about 60 production runs of chilli oil, chicken stock (with chicken fat as a by-product), nam jim and tom yum base.
 
 ---
 
@@ -279,12 +317,12 @@ There are **no automated tests yet** (see the backlog). Verification so far has 
 | Piece | Where | How to update |
 |---|---|---|
 | Database | A Google Sheet in the owner's Google account | `setup()` / `setupThai()` adds missing tabs and is safe to re-run |
-| API | Apps Script bound to that Sheet | Paste `Server.gs`, `Core.gs`, `appsscript.json` → **Deploy → Manage deployments → Edit → New version** (keeps the URL) |
+| API | Apps Script bound to that Sheet | Paste `Server.gs`, `Core.gs`, `Costing.gs`, `appsscript.json` → **Deploy → Manage deployments → Edit → New version** (keeps the URL) |
 | App | Vercel, https://restops-app.vercel.app/ (Root Directory `app`) | Redeploy from the Vercel dashboard or CLI (`vercel --prod` from `app/`), or push to the connected git branch |
 
 Release checklist:
 1. Bump `VERSION` in `core.js` and `CACHE` in `sw.js`.
-2. Run the two Python tools above.
+2. Run the tests and the two Python tools above.
 3. Update Apps Script first, then the app.
 
 The scope `spreadsheets.currentonly` requires the script to be **bound** to the sheet (Extensions → Apps Script). If you use a standalone script with `SPREADSHEET_ID`, change the scope to `.../auth/spreadsheets`.
@@ -299,7 +337,7 @@ Collect these from the current owner and store them in the team's password manag
 - [ ] Apps Script **web-app URL** (`…/exec`) and deployment ID
 - [ ] Vercel account / team and the project name (`restops-app`)
 - [ ] Owner login for the app (never commit it)
-- [ ] A shared **git remote**. The repo currently has **no commits and no remote**: commit, push, and give the next developer access.
+- [ ] A shared **git remote**. The repo has commits but **no remote**: push it and give the next developer access.
 - [ ] The local preview entry lives in `Desktop/proj/.claude/launch.json` (named `restaurant-ops`). It's only needed for Claude Code previews; `tools/serve.py` works without it.
 
 To move ownership: share the Sheet with the new owner and make them **Owner** (the bound script moves with it), have them create a **new deployment** under their account, and put the new URL in `app/config.js`.
@@ -313,7 +351,7 @@ To move ownership: share the Sheet with the new owner and make them **Owner** (t
 | 1 | **Not yet run against a real Sheet** | Apps Script-specific bugs are possible (cell formats, permissions, quotas) | First task: deploy to a test Sheet and run every flow |
 | 2 | ~~No idempotency on writes~~ **Fixed in v1.2** for purchasing (`requestId`) | Sales, stock and expense forms don't send a `requestId` yet | Pass `{ requestId }` from those forms too (`newRequestId()` in `api.js`) |
 | 3 | **Every request reads whole tabs** | Gets slower as StockMovements grows (each sale line writes several rows). Fine for roughly the first year. | Yearly archive plus opening count, or a cached `StockLevels` tab |
-| 4 | **No automated tests** | Regressions possible | `core.js` runs in Node (`module.exports`). Add unit tests with an in-memory db, using the demo's `localDb` as a model. |
+| 4 | **Tests cover the business logic only** | UI regressions possible | `node tools/test_core.js` covers core.js and costing.js. The views are checked by hand. |
 | 5 | **No offline queue** | Can't save without signal | Queue writes in IndexedDB with `requestId`s (needs #2) |
 | 6 | Password hashing is SHA-256 ×500 | Weaker than bcrypt/argon2 if the Users tab leaks | Restrict sheet sharing; consider PBKDF2 with more rounds |
 | 7 | Apps Script quotas | Consumer accounts have daily execution limits | Use a Google Workspace account for production |
@@ -322,4 +360,4 @@ To move ownership: share the Sheet with the new owner and make them **Owner** (t
 
 **Purchasing follow-ups:** credit notes (negative invoices) to settle disputes, adjusting ingredient cost when an approved invoice price differs from the receipt price, supplier price lists, and attaching a photo of the paper invoice.
 
-**Suggested next features:** CSV/Excel export, per-supplier price history, dish-level sales trend, a recipe yield/waste factor, and a store app (Flutter/React Native can reuse the same API unchanged).
+**Suggested next features:** CSV/Excel export, per-supplier price history, dish-level sales trend, and a store app (Flutter/React Native can reuse the same API unchanged).

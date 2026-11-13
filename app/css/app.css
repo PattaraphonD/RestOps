@@ -426,12 +426,17 @@ table.data tr.total td { font-weight: 750; border-top: 1px solid var(--line-stro
 .toast svg { width: 18px; height: 18px; flex: none; margin-top: 1px; }
 .toast.good svg { color: #5fd35f; }
 .toast.bad { background: var(--bad); color: #fff; }
+.toast.warn svg { color: var(--warn); }
+.toast .toast-action {
+  flex: none; align-self: center; margin: -6px -8px -6px 4px; min-height: 44px; padding: 0 12px; border-radius: 10px;
+  border: 0; background: color-mix(in srgb, var(--plane) 16%, transparent); color: inherit; font-weight: 700; font-size: 14px; cursor: pointer;
+}
 @keyframes drop { from { transform: translateY(-16px); opacity: 0; } }
 
 /* ------------------------------------------------------------- misc views */
 
 .empty { text-align: center; padding: 36px 24px; color: var(--ink-3); }
-.empty svg { width: 40px; height: 40px; color: var(--line-strong); margin-bottom: 8px; }
+.empty > svg { width: 40px; height: 40px; color: var(--line-strong); margin-bottom: 8px; }
 .empty h3 { color: var(--ink-2); font-size: 16px; margin-bottom: 4px; }
 
 .skeleton { border-radius: var(--radius); background: linear-gradient(90deg, var(--surface-3) 0%, var(--surface-2) 50%, var(--surface-3) 100%); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
@@ -497,3 +502,45 @@ details.server summary { cursor: pointer; color: var(--ink-2); font-weight: 600;
 .match-grid span { display: block; font-size: 11px; font-weight: 600; color: var(--ink-3); }
 .match-grid small { font-weight: 500; color: var(--ink-3); font-size: 11px; }
 .action-tile[disabled] { pointer-events: none; }
+
+/* -------------------------------------------------------------- costing */
+
+/* Recipe lines: ingredient + remove on top; quantity, unit and live cost below. */
+.rl-head { display: flex; align-items: center; gap: 6px; }
+.rl-head .select, .rl-head .input { flex: 1; min-width: 0; }
+.rl-row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) minmax(64px, auto); gap: 8px; align-items: center; margin-top: 8px; }
+.rl-cost { text-align: right; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.rl-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.rl-foot [data-gross] { text-align: right; }
+.link-btn {
+  display: inline-flex; align-items: center; gap: 4px; min-height: 44px; padding: 0 2px;
+  background: none; border: 0; color: var(--brand); font-weight: 650; font-size: 14px; cursor: pointer;
+}
+.warn-text { color: var(--warn-ink); font-weight: 600; display: flex; align-items: flex-start; gap: 6px; }
+.warn-text svg { width: 16px; height: 16px; margin-top: 2px; }
+.rl-cost.warn-text { justify-content: flex-end; }
+[data-msg] { margin-top: 8px; }
+/* "1 bottle = [0.7] L" conversion rows */
+.unit-eq { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-weight: 650; color: var(--ink-2); }
+.unit-eq .input { flex: 1; min-width: 0; }
+.unit-eq > span { white-space: nowrap; max-width: 40%; overflow: hidden; text-overflow: ellipsis; }
+/* Cost breakdown: one row per line with a share bar */
+.share-list > li { padding: 10px 16px; }
+.share-list .share-top { display: flex; justify-content: space-between; gap: 12px; font-variant-numeric: tabular-nums; }
+.share-list .share-top > span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-list .cost-bar { margin-top: 6px; }
+
+/* ------------------------------------------------------------ production */
+
+/* Five quick actions on one row (Stock in · Produce · Usage · Waste · Count). */
+.actions-grid.dense { gap: 6px; }
+.actions-grid.dense .action-tile { padding: 10px 2px; font-size: 12px; min-width: 0; text-align: center; overflow-wrap: anywhere; line-height: 1.25; }
+.prod-lines .row { min-height: 52px; padding: 10px 14px; align-items: flex-start; }
+.prod-lines .row .sub { white-space: normal; }
+.prod-edit { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr) auto; gap: 8px; align-items: center; margin-top: 8px; }
+.yield-line { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: -4px 2px 14px; font-size: 13px; color: var(--ink-2); }
+.sum-line { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.sum-line b { font-size: 18px; font-variant-numeric: tabular-nums; }
+.change-up { color: var(--bad-ink); font-weight: 650; }
+.change-down { color: var(--good-ink); font-weight: 650; }
+.sparkline { display: block; width: 100%; height: auto; }

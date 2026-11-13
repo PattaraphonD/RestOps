@@ -38,7 +38,7 @@ export function money(n, opts = {}) {
     return new Intl.NumberFormat(locale(), {
       style: 'currency', currency: fmt.currency,
       minimumFractionDigits: opts.cents === false ? 0 : (opts.compact ? 0 : 2),
-      maximumFractionDigits: opts.cents === false || opts.compact ? 0 : 2,
+      maximumFractionDigits: opts.cents === false || opts.compact ? 0 : Math.max(2, opts.dp || 2),
       notation: opts.compact && Math.abs(v) >= 10000 ? 'compact' : 'standard',
     }).format(v);
   } catch { return v.toFixed(2); }
@@ -47,6 +47,19 @@ export function number(n, dp = 2) {
   return new Intl.NumberFormat(locale(), { maximumFractionDigits: dp }).format(Number(n) || 0);
 }
 export function qty(n, unit) { return `${number(n, 3)} ${unit || ''}`.trim(); }
+/** Money for a per-unit cost: small amounts (per gram, per ml) keep up to 4 decimals. */
+export function unitMoney(n) { const v = Number(n) || 0; return money(v, { dp: v !== 0 && Math.abs(v) < 1 ? 4 : 2 }); }
+/** Display label for a stored unit: the localized name of a known unit code, else the text as stored. */
+export function unitLabel(u) {
+  const C = window.RestoCosting;
+  const code = C ? C.unitCode(u) : '';
+  if (code) {
+    const k = `unit.${code}`;
+    const v = t(`unit.${code}`);
+    if (v !== k) return v;
+  }
+  return u === null || u === undefined ? '' : String(u);
+}
 export function pct(n, dp = 1) { return n === null || n === undefined ? '—' : `${number(n, dp)}%`; }
 
 export function today() {
@@ -120,6 +133,7 @@ const P = {
   plate: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/>',
   edit: '<path d="M4 20h4L19 9l-4-4L4 16Z"/><path d="m13.5 6.5 4 4"/>',
   scale: '<path d="M12 3v18M5 21h14M6 7h12"/><path d="m6 7-3 7a3 3 0 0 0 6 0Zm12 0-3 7a3 3 0 0 0 6 0Z"/>',
+  swap: '<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 12 4 4-4 4"/><path d="M21 16H7"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
 };
 export function icon(name, cls = '') {
@@ -128,14 +142,26 @@ export function icon(name, cls = '') {
 
 /* ---------------------------------------------------------------- toasts */
 
-export function toast(message, kind = 'good', ms = 3200) {
+/**
+ * toast(message, kind = 'good' | 'info' | 'warn' | 'bad', ms, action?)
+ * action: { label, onClick } adds a button to the toast; tapping it dismisses the toast.
+ */
+export function toast(message, kind = 'good', ms = 3200, action = null) {
   let host = $('.toast-host');
   if (!host) { host = document.createElement('div'); host.className = 'toast-host'; host.setAttribute('role', 'status'); document.body.append(host); }
   const t = document.createElement('div');
   t.className = `toast ${kind}`;
-  mount(t, html`${icon(kind === 'bad' ? 'alert' : kind === 'info' ? 'info' : 'check')}<span>${message}</span>`);
+  mount(t, html`${icon(kind === 'bad' || kind === 'warn' ? 'alert' : kind === 'info' ? 'info' : 'check')}<span class="grow">${message}</span>
+    ${action ? html`<button type="button" class="toast-action">${action.label}</button>` : ''}`);
   host.append(t);
-  setTimeout(() => { t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, ms);
+  let gone = false;
+  const dismiss = () => {
+    if (gone) return;
+    gone = true;
+    t.style.transition = 'opacity .3s'; t.style.opacity = '0'; setTimeout(() => t.remove(), 300);
+  };
+  if (action) t.querySelector('.toast-action').addEventListener('click', () => { dismiss(); action.onClick(); });
+  setTimeout(dismiss, ms);
 }
 
 /* ---------------------------------------------------------------- sheets */

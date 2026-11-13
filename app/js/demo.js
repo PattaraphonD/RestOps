@@ -1,10 +1,10 @@
 // Demo backend: runs the real business logic (core.js) against localStorage,
 // pre-filled with two months of realistic data for a fictional Thai restaurant.
 // The sample data is created in the app's current language (English or Thai).
-/* global RestoCore */
+/* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v1';
+const KEY = 'ro.demo.db.v2';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -88,7 +88,9 @@ function localToday() {
 // Category and unit keys map to the per-language default lists in i18n.js.
 const ICAT = { meat: 0, produce: 1, dairy: 2, dry: 3, sauce: 4, bev: 5, pack: 6 };
 const MCAT = { mains: 0, noodles: 1, starters: 2, desserts: 3, drinks: 4 };
-const UNIT = { kg: 0, L: 2, pcs: 4, can: 7 };
+const UNIT = { kg: 0, L: 2, pcs: 4, bottle: 6, can: 7 };
+// The same units as costing.js codes, for planning in plain numbers.
+const UNIT_CODE = { kg: 'kg', L: 'l', pcs: 'pcs', can: 'can' };
 
 // lead = delivery days, terms = payment terms in days. Produce is bought at the market (no orders).
 const SUPPLIERS = [
@@ -98,21 +100,24 @@ const SUPPLIERS = [
   { key: 'dry', en: ['Rungrueang Wholesale', 'Account desk'], th: ['ค้าส่งรุ่งเรือง', 'ฝ่ายบัญชี'], phone: '02-555-0104', email: 'b2b@example.com', lead: 2, terms: 30 },
 ];
 
-// [key, English name, Thai name, category, unit, cost, supplier]
+// [key, English name, Thai name, category, unit, cost, supplier, yield %]
+// Yield is the usable share after trimming, peeling or juicing (none = 100 %).
 const INGREDIENTS = [
-  ['chicken', 'Chicken thigh', 'สะโพกไก่', 'meat', 'kg', 95, 'meat'],
+  ['chicken', 'Chicken thigh', 'สะโพกไก่', 'meat', 'kg', 95, 'meat', 90],
   ['pork', 'Pork shoulder', 'สันคอหมู', 'meat', 'kg', 140, 'meat'],
-  ['shrimp', 'Shrimp (white, 31/40)', 'กุ้งขาว (31/40)', 'meat', 'kg', 320, 'sea'],
+  ['bones', 'Chicken carcass/bones', 'โครงไก่', 'meat', 'kg', 25, 'meat'],
+  ['fat', 'Chicken fat', 'มันไก่', 'meat', 'kg', 40, ''],
+  ['shrimp', 'Shrimp (white, 31/40)', 'กุ้งขาว (31/40)', 'meat', 'kg', 320, 'sea', 85],
   ['egg', 'Eggs', 'ไข่ไก่', 'dairy', 'pcs', 4.5, 'dry'],
   ['rice', 'Jasmine rice', 'ข้าวหอมมะลิ', 'dry', 'kg', 38, 'dry'],
   ['sticky', 'Sticky rice', 'ข้าวเหนียว', 'dry', 'kg', 45, 'dry'],
   ['noodle', 'Rice noodles (sen lek)', 'เส้นเล็ก', 'dry', 'kg', 45, 'dry'],
-  ['garlic', 'Garlic', 'กระเทียม', 'produce', 'kg', 80, 'veg'],
-  ['basil', 'Holy basil', 'ใบกะเพรา', 'produce', 'kg', 60, 'veg'],
+  ['garlic', 'Garlic', 'กระเทียม', 'produce', 'kg', 80, 'veg', 85],
+  ['basil', 'Holy basil', 'ใบกะเพรา', 'produce', 'kg', 60, 'veg', 70],
   ['chili', "Bird's eye chili", 'พริกขี้หนู', 'produce', 'kg', 90, 'veg'],
-  ['lime', 'Lime', 'มะนาว', 'produce', 'kg', 60, 'veg'],
-  ['sprout', 'Bean sprouts', 'ถั่วงอก', 'produce', 'kg', 30, 'veg'],
-  ['mango', 'Mango (nam dok mai)', 'มะม่วงน้ำดอกไม้', 'produce', 'kg', 70, 'veg'],
+  ['lime', 'Lime', 'มะนาว', 'produce', 'kg', 60, 'veg', 45],
+  ['sprout', 'Bean sprouts', 'ถั่วงอก', 'produce', 'kg', 30, 'veg', 95],
+  ['mango', 'Mango (nam dok mai)', 'มะม่วงน้ำดอกไม้', 'produce', 'kg', 70, 'veg', 60],
   ['fishsauce', 'Fish sauce', 'น้ำปลา', 'sauce', 'L', 55, 'dry'],
   ['oyster', 'Oyster sauce', 'ซอสหอยนางรม', 'sauce', 'L', 90, 'dry'],
   ['paste', 'Green curry paste', 'พริกแกงเขียวหวาน', 'sauce', 'kg', 180, 'dry'],
@@ -125,18 +130,89 @@ const INGREDIENTS = [
   ['cup', 'Takeaway cups', 'แก้วเทคอะเวย์', 'pack', 'pcs', 2.5, 'dry'],
 ];
 
-// [key, English name, Thai name, category, price, base daily qty, recipe {ingredientKey: qty}]
-const MENU = [
-  ['kraprao', 'Holy Basil Chicken & Rice', 'กะเพราไก่ราดข้าว', 'noodles', 89, 22, { chicken: 0.15, rice: 0.12, basil: 0.02, chili: 0.01, garlic: 0.01, oil: 0.02, fishsauce: 0.01, oyster: 0.01, egg: 1 }],
-  ['curry', 'Green Curry Chicken', 'แกงเขียวหวานไก่', 'mains', 139, 12, { chicken: 0.18, paste: 0.04, coconut: 0.2, basil: 0.01, rice: 0.12, fishsauce: 0.01, sugar: 0.01 }],
-  ['padthai', 'Pad Thai with Shrimp', 'ผัดไทยกุ้งสด', 'noodles', 149, 15, { noodle: 0.12, shrimp: 0.1, egg: 1, sprout: 0.05, oil: 0.02, fishsauce: 0.01, sugar: 0.02, lime: 0.02 }],
-  ['tomyum', 'Tom Yum Shrimp Soup', 'ต้มยำกุ้ง', 'starters', 189, 7, { shrimp: 0.15, lime: 0.03, chili: 0.01, fishsauce: 0.02 }],
-  ['friedrice', 'Pork Fried Rice', 'ข้าวผัดหมู', 'noodles', 99, 14, { rice: 0.15, pork: 0.12, egg: 1, oil: 0.02, garlic: 0.01, fishsauce: 0.01 }],
-  ['garlicpork', 'Garlic Pepper Pork & Rice', 'หมูกระเทียมพริกไทยราดข้าว', 'mains', 109, 9, { pork: 0.16, garlic: 0.03, rice: 0.12, oil: 0.02, oyster: 0.01 }],
-  ['mango', 'Mango Sticky Rice', 'ข้าวเหนียวมะม่วง', 'desserts', 119, 8, { mango: 0.25, sticky: 0.1, coconut: 0.1, sugar: 0.03 }],
-  ['tea', 'Thai Iced Tea', 'ชาไทยเย็น', 'drinks', 55, 25, { tea: 0.015, milk: 0.05, sugar: 0.03, cup: 1 }],
-  ['cola', 'Cola', 'โคล่า', 'drinks', 35, 18, { cola: 1 }],
+// Other units an ingredient is used in: 1 unit = factor × stock unit.
+// A UNIT key is swapped for the language's own unit name (bottle → ขวด).
+const CONVERSIONS = {
+  egg: [{ unit: 'g', factor: 1 / 55 }],
+  fishsauce: [{ unit: 'bottle', factor: 0.7 }],
+};
+
+// Preps made in the kitchen, all measured in litres:
+// [key, English name, Thai name, batch (L), kept in stock, shelf life (days),
+//  recipe [[ingredientKey, net qty, unit]], production weekdays (0 = Sun … 6 = Sat)]
+const PREPS = [
+  ['chillioil', 'Chilli oil', 'น้ำมันพริก', 2, true, 30,
+    [['oil', 1.6, 'l'], ['chili', 300, 'g'], ['garlic', 200, 'g'], ['sugar', 50, 'g']], [1]],
+  ['stock', 'Chicken stock', 'น้ำซุปไก่', 10, true, 4,
+    [['bones', 5, 'kg'], ['garlic', 100, 'g']], [1, 4]],
+  ['namjim', 'Nam jim seafood sauce', 'น้ำจิ้มซีฟู้ด', 1, true, 5,
+    [['garlic', 100, 'g'], ['chili', 100, 'g'], ['lime', 400, 'g'], ['fishsauce', 200, 'ml'], ['sugar', 150, 'g']], [2, 5]],
+  ['tomyumbase', 'Tom yum base', 'น้ำต้มยำ', 1, true, 4,
+    [['chillioil', 100, 'ml'], ['stock', 0.8, 'l'], ['lime', 100, 'g'], ['chili', 30, 'g'], ['fishsauce', 60, 'ml']], [1, 4]],
+  ['sweetcream', 'Sweet coconut cream', 'น้ำกะทิหวาน', 1, false, 2,
+    [['coconut', 0.9, 'l'], ['sugar', 150, 'g']], []],
 ];
+
+// [key, English name, Thai name, category, price, base daily qty, recipe [[ingredientKey, net qty, unit]]]
+const MENU = [
+  ['kraprao', 'Holy Basil Chicken & Rice', 'กะเพราไก่ราดข้าว', 'noodles', 89, 22, [['chicken', 150, 'g'], ['rice', 120, 'g'],
+    ['basil', 20, 'g'], ['chili', 10, 'g'], ['garlic', 10, 'g'], ['oil', 20, 'ml'], ['fishsauce', 15, 'ml'], ['oyster', 10, 'ml'], ['egg', 1, 'pcs']]],
+  ['curry', 'Green Curry Chicken', 'แกงเขียวหวานไก่', 'mains', 139, 12, [['chicken', 180, 'g'], ['paste', 40, 'g'],
+    ['coconut', 200, 'ml'], ['basil', 10, 'g'], ['rice', 120, 'g'], ['fishsauce', 15, 'ml'], ['sugar', 10, 'g']]],
+  ['padthai', 'Pad Thai with Shrimp', 'ผัดไทยกุ้งสด', 'noodles', 149, 15, [['noodle', 120, 'g'], ['shrimp', 90, 'g'], ['egg', 1, 'pcs'],
+    ['sprout', 50, 'g'], ['oil', 20, 'ml'], ['fishsauce', 15, 'ml'], ['sugar', 20, 'g'], ['lime', 20, 'g'], ['chillioil', 15, 'ml']]],
+  ['tomyum', 'Tom Yum Shrimp Soup', 'ต้มยำกุ้ง', 'starters', 189, 7, [['shrimp', 120, 'g'], ['tomyumbase', 0.3, 'l']]],
+  ['friedrice', 'Pork Fried Rice', 'ข้าวผัดหมู', 'noodles', 99, 14, [['rice', 150, 'g'], ['pork', 120, 'g'], ['egg', 1, 'pcs'],
+    ['oil', 20, 'ml'], ['garlic', 10, 'g'], ['fishsauce', 10, 'ml'], ['namjim', 20, 'ml']]],
+  ['garlicpork', 'Garlic Pepper Pork & Rice', 'หมูกระเทียมพริกไทยราดข้าว', 'mains', 109, 9, [['pork', 160, 'g'], ['garlic', 30, 'g'],
+    ['rice', 120, 'g'], ['oil', 20, 'ml'], ['oyster', 10, 'ml']]],
+  ['mango', 'Mango Sticky Rice', 'ข้าวเหนียวมะม่วง', 'desserts', 119, 8, [['mango', 200, 'g'], ['sticky', 100, 'g'], ['sweetcream', 0.1, 'l']]],
+  ['tea', 'Thai Iced Tea', 'ชาไทยเย็น', 'drinks', 55, 25, [['tea', 15, 'g'], ['milk', 50, 'ml'], ['sugar', 30, 'g'], ['cup', 1, 'pcs']]],
+  ['cola', 'Cola', 'โคล่า', 'drinks', 35, 18, [['cola', 1, 'can']]],
+];
+
+// Production runs land 88–100 % of the recipe batch; plan with the average.
+const RUN_YIELD = 0.94;
+
+// Daily needs worked out from the recipes, in each item's stock unit (gross, trim loss included).
+//   usage[raw]  = raw ingredients used per day, through every prep (what purchasing must cover)
+//   prepDaily[p] = how much of a stocked prep is used per day by dishes, and by other preps
+//                  made on different days (what each production run must cover)
+function planUsage() {
+  const L = (lines) => lines.map(([k, q, u]) => ({ ingredientId: k, qty: q, unit: u }));
+  const book = RestoCosting.buildBook([
+    ...INGREDIENTS.map(([key, , , , unit, cost, , y]) => ({ id: key, unit: UNIT_CODE[unit], costPerUnit: cost,
+      yieldPct: y || 100, kind: 'raw', conversions: CONVERSIONS[key] || [] })),
+    ...PREPS.map(([key, , , batch, track, , lines, days]) => ({ id: key, unit: 'l', yieldPct: 100, kind: 'prep',
+      batchQty: batch, trackStock: track, prepLines: L(lines), days })),
+  ]);
+  // Gross stock-unit amounts one line takes: down to raw ingredients (all) or stopping at stocked preps.
+  const takes = (line, mult, all, acc) => {
+    const it = book.byId[line.ingredientId];
+    const g = RestoCosting.grossQty(RestoCosting.convertQty(line.qty, line.unit, it), it.yieldPct) * mult;
+    if (it.kind === 'prep' && (all || !it.trackStock)) {
+      const per = g / it.batchQty / (it.trackStock ? RUN_YIELD : 1);
+      it.prepLines.forEach((l) => takes(l, per, all, acc));
+    } else acc[it.id] = (acc[it.id] || 0) + g;
+    return acc;
+  };
+  const usage = {}, prepDaily = {};
+  MENU.forEach(([, , , , , base, recipe]) => L(recipe).forEach((l) => {
+    takes(l, base, true, usage);
+    takes(l, base, false, prepDaily);
+  }));
+  // Preps feed other preps: walk consumers before what they consume (PREPS lists ingredients first).
+  [...PREPS].reverse().forEach(([key, , , batch, track, , lines, days]) => {
+    if (!track || !prepDaily[key]) return;
+    L(lines).forEach((l) => {
+      const child = book.byId[l.ingredientId];
+      // A prep made on the same days as its consumer is planned from that day's runs instead.
+      if (child.kind === 'prep' && days.every((d) => child.days.includes(d))) return;
+      takes(l, prepDaily[key] / batch / RUN_YIELD, false, prepDaily);
+    });
+  });
+  return { usage, prepDaily, takes, book };
+}
 
 function seed(api, db, lang) {
   const TH = lang === 'th';
@@ -170,39 +246,48 @@ function seed(api, db, lang) {
       leadTimeDays: s.lead, paymentTermsDays: s.terms } }).id;
   });
 
-  // Average daily usage → sensible minimum levels.
-  const usage = {};
-  MENU.forEach(([, , , , , base, recipe]) => Object.entries(recipe).forEach(([k, q]) => { usage[k] = (usage[k] || 0) + q * base; }));
+  // Average daily usage (preps included) → sensible minimum levels and restock amounts.
+  const { usage, prepDaily, takes, book: plan } = planUsage();
   const isCount = (unitKey) => unitKey === 'pcs' || unitKey === 'can';
+  const unitName = (u) => (UNIT[u] === undefined ? u : units[UNIT[u]]);
   const ing = {}, unitOf = {};
-  INGREDIENTS.forEach(([key, en, th, cat, unit, cost, s]) => {
-    const minLevel = isCount(unit) ? Math.ceil(usage[key] * 1.5) : Math.max(0.3, round(usage[key] * 1.5, 1));
-    const parLevel = isCount(unit) ? Math.ceil(usage[key] * 6 / 12) * 12 : Math.ceil(usage[key] * 6 * 2) / 2;
-    ing[key] = as('ingredients.save', { item: { name: tx(en, th), category: icats[ICAT[cat]], unit: units[UNIT[unit]],
-      costPerUnit: cost, minLevel, parLevel, supplierId: sup[s] } }).id;
+  INGREDIENTS.forEach(([key, en, th, cat, unit, cost, s, y]) => {
+    const use = usage[key] || 0;
+    const minLevel = !use ? 0 : isCount(unit) ? Math.ceil(use * 1.5) : Math.max(0.3, round(use * 1.5, 1));
+    const parLevel = !use ? '' : isCount(unit) ? Math.ceil(use * 6 / 12) * 12 : Math.ceil(use * 6 * 2) / 2;
+    ing[key] = as('ingredients.save', {
+      item: { name: tx(en, th), category: icats[ICAT[cat]], unit: units[UNIT[unit]], costPerUnit: cost,
+        minLevel, parLevel, supplierId: s ? sup[s] : '', yieldPct: y || '' },
+      units: (CONVERSIONS[key] || []).map((c) => ({ unit: unitName(c.unit), factor: c.factor })),
+    }).id;
     unitOf[key] = unit;
+  });
+  const lines = (recipe) => recipe.map(([k, q, u]) => ({ ingredientId: ing[k], qty: q, unit: unitName(u) }));
+  PREPS.forEach(([key, en, th, batchQty, trackStock, shelfLifeDays, recipe]) => {
+    ing[key] = as('ingredients.save', {
+      item: { name: tx(en, th), category: icats[ICAT.sauce], unit: units[UNIT.L], kind: 'prep', batchQty, trackStock,
+        shelfLifeDays, minLevel: trackStock ? round(prepDaily[key] || 0, 1) : 0, parLevel: '' },
+      prepRecipe: lines(recipe),
+    }).id;
   });
 
   const dish = {};
   MENU.forEach(([key, en, th, cat, price, , recipe]) => {
-    dish[key] = as('menu.save', {
-      item: { name: tx(en, th), category: mcats[MCAT[cat]], price },
-      recipe: Object.entries(recipe).map(([k, q]) => ({ ingredientId: ing[k], qty: q })),
-    }).id;
+    dish[key] = as('menu.save', { item: { name: tx(en, th), category: mcats[MCAT[cat]], price }, recipe: lines(recipe) }).id;
   });
 
   const start = D(today, -62);
-  // Restock everything up to ~7.5 days of usage (orders go out Monday and Thursday).
+  // Restock everything up to ~7.5 days of usage (orders go out Monday and Thursday; opening stock covers 12 days).
   // Market produce is bought on the spot; other suppliers go through the full
   // order → delivery → invoice → payment cycle, with the odd short delivery or price rise.
   const supplierTerms = Object.fromEntries(SUPPLIERS.map((x) => [x.key, x.terms]));
   const invoices = [];
   let invSeq = 1000;
-  const restockLines = (keys) => {
+  const restockLines = (keys, days = 7.5) => {
     const levels = Object.fromEntries(as('stock.levels').map((s) => [s.id, s.onHand]));
     const bySupplier = {};
     keys.forEach((k) => {
-      const target = usage[k] * 7.5;
+      const target = (usage[k] || 0) * days;
       const have = levels[ing[k]] || 0;
       let q = Math.max(0, target - have);
       q = isCount(unitOf[k]) ? Math.ceil(q / 12) * 12 : Math.ceil(q * 2) / 2;
@@ -242,8 +327,31 @@ function seed(api, db, lang) {
     });
   };
 
+  // Kitchen production on its set weekdays (everything on the first day), before the day's sales.
+  // Each run makes enough (half) batches to last until the next one, plus what other preps made today use.
+  let runs = 0;
+  const produce = (d, dow, first) => {
+    const due = PREPS.filter(([, , , , track, , , days]) => track && (first || days.includes(dow)));
+    if (!due.length) return;
+    const levels = Object.fromEntries(as('stock.levels').map((s) => [s.id, s.onHand]));
+    const batches = {}, fed = {};
+    // Plan consumers first (PREPS lists ingredients before the preps that use them).
+    [...due].reverse().forEach(([key, , , batch, , , recipe, days]) => {
+      const gap = days.length > 1 ? 4 : 7;
+      const want = (prepDaily[key] || 0) * 1.15 * (gap + 1) * 1.2 + (fed[key] || 0) - (levels[ing[key]] || 0);
+      batches[key] = Math.max(0.5, Math.ceil(want / (batch * RUN_YIELD) * 2) / 2);
+      recipe.forEach(([k, q, u]) => { if (plan.byId[k].kind === 'prep') takes({ ingredientId: k, qty: q, unit: u }, batches[key], false, fed); });
+    });
+    due.forEach(([key, , , batch]) => {
+      const n = batches[key];
+      as('production.add', { date: d, prepId: ing[key], batches: n, producedQty: round(n * batch * (0.88 + r() * 0.12), 2),
+        producedBy: runs++ % 2 ? 'manager' : 'staff',
+        byproducts: key === 'stock' ? [{ ingredientId: ing.fat, qty: round(n * (0.25 + r() * 0.15), 2), unit: 'kg' }] : [] });
+    });
+  };
+
   const allKeys = INGREDIENTS.map((x) => x[0]);
-  as('purchases.add', { date: start, lines: Object.values(restockLines(allKeys)).flat(), invoiceRef: tx('Opening stock', 'สต็อกยกมา') });
+  as('purchases.add', { date: start, lines: Object.values(restockLines(allKeys, 12)).flat(), invoiceRef: tx('Opening stock', 'สต็อกยกมา') });
   const wasteReasons = ['stock.reasonSpoiled', 'stock.reasonExpired', 'stock.reasonDropped', 'stock.reasonOverprep'].map((k) => t(k));
 
   for (let d = start; d <= today; d = D(d, 1)) {
@@ -257,6 +365,7 @@ function seed(api, db, lang) {
       const late = d > D(today, -5);
       buy(d, allKeys.filter((k) => !(late && (k === 'shrimp' || k === 'basil'))));
     }
+    produce(d, dow, d === start);
 
     // Sales in two channels.
     const dine = [], delivery = [];

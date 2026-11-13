@@ -6,6 +6,7 @@ import {
   openSheet, confirmSheet, toast, busy, options, emptyState,
 } from '../ui.js';
 import { t, defaults } from '../i18n.js';
+import { impactToast } from './stock.js';
 
 const ui = { tab: 'orders', poFilter: 'open', invFilter: 'review' };
 
@@ -523,6 +524,7 @@ function receiveSheet(ctx, po) {
         const r = await call('po.receive', { poId: po.id, date: form.date.value, deliveryRef: form.deliveryRef.value, note: form.note.value, lines }, { requestId: rid });
         close();
         toast(r.status === 'received' ? t('po.receivedAll', { no: po.poNumber }) : t('po.receivedPart', { no: po.poNumber }));
+        impactToast(ctx, r.impact);
         await ctx.refresh();
         render(ctx);
       }, form));

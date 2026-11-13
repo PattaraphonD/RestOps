@@ -6,6 +6,7 @@ import {
 } from '../ui.js';
 import { list, signOut, langSwitch, wireLangSwitch } from '../app.js';
 import { t, getLang, defaults } from '../i18n.js';
+import { renderLog as production } from './production.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -13,7 +14,7 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team, settings, account };
+  const pages = { expenses, suppliers, team, settings, account, production };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -42,6 +43,7 @@ function index({ el, setTitle, state, can }) {
     <section class="section"><div class="section-head"><h2>${t('more.kitchen')}</h2></div>
       <div class="card"><ul class="list">
         ${item('#/menu', 'chef', t('menu.title'), t('more.menuSub', { n: state.boot.menu.filter((m) => m.active).length }))}
+        ${item('#/more/production', 'clipboard', t('production.logTitle'), t('more.productionSub'))}
       </ul></div></section>
     <section class="section"><div class="section-head"><h2>${t('account.language')}</h2></div>${langSwitch()}</section>
     <section class="section"><div class="card"><ul class="list">
