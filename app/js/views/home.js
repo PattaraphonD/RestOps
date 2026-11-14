@@ -61,6 +61,7 @@ const TASK = {
   preps: { icon: 'chef', cls: 'warn', href: () => null },
   promotionsEnding: { icon: 'info', cls: '', href: () => '#/menu/promotions' },
   closeYesterday: { icon: 'clipboard', cls: 'bad', href: (x) => `#/close/${x.items[0].date}` },
+  backup: { icon: 'download', cls: 'warn', href: () => '#/more/settings' },
 };
 
 /** "งานวันนี้": what this person should do now, each row one tap from the place to do it. */
@@ -71,7 +72,8 @@ function todayCard(sum, extra = []) {
     const m = TASK[x.kind] || { icon: 'info', cls: '', href: () => null };
     const sub = x.kind === 'preps' ? x.items.map((i) => i.name).join(', ')
       : x.kind === 'promotionsEnding' ? x.items.map((i) => `${i.name} (${fmtDate(i.endDate)})`).join(', ')
-        : x.kind === 'closeYesterday' ? fmtDate(x.items[0].date, { weekday: 'long', day: 'numeric', month: 'long' }) : (x.sub || '');
+        : x.kind === 'closeYesterday' ? fmtDate(x.items[0].date, { weekday: 'long', day: 'numeric', month: 'long' })
+          : x.kind === 'backup' ? (x.days === null ? t('today.backupNever') : t('today.backupDays', { n: x.days })) : (x.sub || '');
     const body = html`<span class="avatar ${m.cls}">${icon(m.icon)}</span>
       <span class="grow"><div class="title">${t(`today.task.${x.kind}`, { n: x.n })}</div>${sub ? html`<div class="sub">${sub}</div>` : ''}</span>${icon('chevR', 'chev')}`;
     const href = m.href(x);

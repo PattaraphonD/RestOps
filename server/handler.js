@@ -120,7 +120,36 @@ var RestoHandler = (function () {
     return who;
   }
 
-  return { handleRequest: handleRequest, setupDatabase: setupDatabase, resetOwnerPassword: resetOwnerPassword };
+  /**
+   * Loads an owner's backup file (backup.export) into a new, empty database — before the setup script.
+   * Passwords are not in backups: afterwards run the setup script with --reset-owner, then reset staff passwords in the app.
+   */
+  async function restoreBackup(deps, backup) {
+    if (!backup || backup.format !== 'restaurant-ops-backup' || !backup.tables) throw new Error('This file is not a Restaurant Ops backup.');
+    var total = 0;
+    await deps.transaction(async function (query) {
+      await query('select pg_advisory_xact_lock(' + LOCK_KEY + ')', []);
+      var tables = allTables();
+      for (var i = 0; i < tables.length; i++) {
+        var n = await query('select count(*)::int as n from "' + tables[i] + '"', []);
+        if (Number(n[0].n) > 0) throw new Error('The database is not empty (' + tables[i] + '). Restore only into a new project, before running the setup.');
+      }
+      var changes = {};
+      tables.forEach(function (t) {
+        var rows = (backup.tables[t] || []).map(function (r) {
+          var o = {};
+          RestoCore.SCHEMA[t].forEach(function (c) { o[c] = r[c] === undefined ? '' : r[c]; });
+          return o;
+        });
+        total += rows.length;
+        if (rows.length) changes[t] = { inserted: rows, updated: [], removed: [] };
+      });
+      await Pg.flush(query, changes);
+    });
+    return { rows: total };
+  }
+
+  return { handleRequest: handleRequest, setupDatabase: setupDatabase, resetOwnerPassword: resetOwnerPassword, restoreBackup: restoreBackup };
 })();
 
 if (typeof module !== 'undefined' && module.exports) module.exports = RestoHandler;

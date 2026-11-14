@@ -35,7 +35,7 @@ global.RestoCore.createApi = function (env) {
   });
 };
 
-T.runAll({ quiet: true, skip: /^manifest:/ }).then(({ failed }) => {
+T.runAll({ quiet: true, skip: /^manifest:|shared copies match/ }).then(({ failed }) => {
   if (failed) { console.error('Tests failed while tracing; manifest not written.'); process.exit(1); }
   const out = {};
   Object.keys(used).sort().forEach((a) => {

@@ -65,3 +65,23 @@ testAsync('driver: the owner setup script works end to end', async () => {
     assert.equal((await H.handleRequest({ action: 'auth.login', payload: { username: 'owner', password: pw2 } }, deps)).ok, true);
   } finally { await s.close(); }
 });
+
+testAsync('driver: the restore script loads a backup file into an empty database', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const { makeApi } = require('../test_core.js');
+  const { as } = makeApi();
+  as('suppliers.save', { item: { name: 'Fresh Co' } });
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'resto-bk-')), 'restaurant-ops-backup-2026-11-13.json');
+  fs.writeFileSync(file, JSON.stringify(as('backup.export', { today: '2026-11-13' })));
+  const s = await socketDb();
+  try {
+    const out = (await execFileAsync(process.execPath, [path.join(__dirname, '..', 'supabase_restore.mjs'), file, '--yes'],
+      { env: Object.assign({}, process.env, { SUPABASE_DB_URL: s.url }), encoding: 'utf8' })).stdout;
+    assert.match(out, /Restored \d+ rows/);
+    // The test database takes one connection at a time: run the second restore before querying it here.
+    await assert.rejects(execFileAsync(process.execPath, [path.join(__dirname, '..', 'supabase_restore.mjs'), file, '--yes'],
+      { env: Object.assign({}, process.env, { SUPABASE_DB_URL: s.url }), encoding: 'utf8' }), /not empty/);
+    assert.deepEqual((await s.sql.unsafe('select "name" from "Suppliers"')).map((r) => r.name), ['Fresh Co']);
+  } finally { await s.close(); fs.rmSync(path.dirname(file), { recursive: true, force: true }); }
+});

@@ -1,7 +1,7 @@
 // More: expenses, suppliers, team, settings, account.
 import { call, session, resetDemo } from '../api.js';
 import {
-  html, raw, mount, icon, money, today, relDay, fmtMonth, timeOf, $, $$, openSheet, confirmSheet, toast, busy,
+  html, raw, mount, icon, money, today, relDay, fmtMonth, fmtDate, timeOf, $, $$, openSheet, confirmSheet, toast, busy,
   options, emptyState, initials,
 } from '../ui.js';
 import { list, signOut } from '../app.js';
@@ -315,7 +315,15 @@ function settings(ctx) {
   const ROUNDING = ['', 'none', '1', '5', '10', '0.99', '9-ending'];
   const text = (name, hint) => html`<label class="field"><span class="label">${t(`settings.${name}`)}</span>
     <input class="input" name="${name}" value="${s[name]}">${hint ? html`<span class="hint">${hint}</span>` : ''}</label>`;
-  mount(el, html`<form id="f" class="card pad" style="margin-top:4px" novalidate>
+  const last = s.lastBackupAt;
+  mount(el, html`<section class="card pad backup-card" style="margin-top:4px">
+      <div class="section-head" style="margin:0 0 6px"><h2>${icon('download')} ${t('backup.title')}</h2></div>
+      <p class="small" style="margin:0 0 4px"><b>${last ? t('backup.last', { date: `${fmtDate(s.lastBackupDate || last.slice(0, 10), { day: 'numeric', month: 'short', year: 'numeric' })} ${timeOf(last)}`, who: s.lastBackupBy || '' }) : t('backup.never')}</b></p>
+      <p class="small muted" style="margin:0 0 12px">${t('backup.why')}</p>
+      <button class="btn primary block" type="button" id="backup">${icon('download')}${t('backup.download')}</button>
+      <p class="small muted" style="margin:10px 0 0">${t('backup.note')}</p>
+    </section>
+    <form id="f" class="card pad" style="margin-top:14px" novalidate>
       ${text('restaurantName')}
       <div class="form-row">
         <label class="field"><span class="label">${t('settings.currency')}</span><select class="select" name="currency">${options(['THB', 'USD', 'EUR', 'GBP', 'SGD', 'MYR', 'JPY', 'AUD', 'VND', 'IDR', 'PHP'], s.currency)}</select></label>
@@ -338,6 +346,14 @@ function settings(ctx) {
       <button class="btn primary block" id="save" type="button">${t('settings.save')}</button>
     </form>`);
   const form = $('#f');
+  $('#backup').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+    const b = await call('backup.export', { today: today() });
+    downloadJson(b, `restaurant-ops-backup-${today()}.json`);
+    const n = Object.values(b.counts || {}).reduce((a, x) => a + x, 0);
+    toast(t('backup.done', { n: n.toLocaleString('th-TH') }));
+    await ctx.refresh();
+    settings(ctx);
+  }));
   $('#defaults').addEventListener('click', () => {
     LISTS.forEach((n) => { form[n].value = defaults(n).join(', '); });
     toast(t('settings.defaultsFilled'), 'info');
@@ -405,3 +421,16 @@ export function applyTheme() {
   if (th) document.documentElement.dataset.theme = th; else delete document.documentElement.dataset.theme;
 }
 applyTheme();
+
+/** Saves data as a .json file on this device (phone or computer). */
+function downloadJson(data, filename) {
+  const blob = new Blob([JSON.stringify(data)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 10000);
+}

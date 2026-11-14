@@ -75,3 +75,18 @@ test('edge function: shared copies match their sources (run python tools/build_b
   });
   assert.equal(read('supabase/functions/_shared/manifest.json'), read('server/manifest.json'));
 });
+
+testAsync('http: health with ?check=db runs a query, so Supabase sees database activity', async () => {
+  const d = await deps();
+  let queried = false;
+  const spy = Object.assign({}, d, { transaction: (fn) => d.transaction((q) => fn((t, p) => { queried = true; return q(t, p); })) });
+  const res = await Http.handleHttp(new Request('https://x/api?check=db'), spy);
+  const body = await res.json();
+  assert.equal(res.status, 200);
+  assert.equal(body.data.databaseOk, true);
+  assert.equal(queried, true);
+  const down = await Http.handleHttp(new Request('https://x/api?check=db'), Object.assign({}, d, { transaction: () => Promise.reject(new Error('paused')) }));
+  assert.equal(down.status, 503);
+  assert.equal((await down.json()).ok, false);
+  await d.pg.db.close();
+});

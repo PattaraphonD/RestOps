@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.0.4';
+  var VERSION = '2.0.5';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -100,6 +100,7 @@ var RestoCore = (function () {
     foodBudget: ''                    // monthly ingredient budget; '' = expected revenue × target food cost %
   };
   var CHANNEL_TYPES = ['dineIn', 'takeaway', 'delivery', 'other'];
+  var BACKUP_REMINDER_DAYS = 30;   // remind the owner to download a backup after a month
 
   // Used instead of the English lists when setup runs in Thai (initialize({ lang: 'th' })).
   var DEFAULT_SETTINGS_TH = {
@@ -1651,6 +1652,31 @@ var RestoCore = (function () {
         : { date: date, closed: false };
     } };
 
+    /** A Settings row the app keeps itself (not one of the owner's editable settings). */
+    function putSetting(key, value, user) {
+      var ts = nowIso();
+      if (db.read('Settings').some(function (r) { return r.key === key; })) {
+        db.updateWhere('Settings', function (r) { return r.key === key; }, { value: value, updatedAt: ts, updatedBy: user.username });
+      } else db.append('Settings', [{ key: key, value: value, updatedAt: ts, updatedBy: user.username }]);
+    }
+
+    // The owner's backup: every table (passwords removed), and when it was taken, for the monthly reminder.
+    A['backup.export'] = { role: 'owner', write: true, fn: function (p, user) {
+      var ts = nowIso(), tables = {}, counts = {};
+      Object.keys(SCHEMA).forEach(function (t) {
+        var rows = db.read(t);
+        if (t === 'Users') rows = rows.map(function (u) { var c = {}; for (var k in u) c[k] = u[k]; c.passwordHash = ''; c.salt = ''; return c; });
+        tables[t] = rows;
+        counts[t] = rows.length;
+      });
+      var name = settings().restaurantName;
+      putSetting('lastBackupAt', ts, user);
+      // The shop's own date (the phone sends it): the server clock is UTC, 7 hours behind Thailand.
+      putSetting('lastBackupDate', p.today ? reqDate(p.today, 'Today') : todayStr(), user);
+      putSetting('lastBackupBy', user.username, user);
+      return { format: 'restaurant-ops-backup', version: VERSION, exportedAt: ts, restaurantName: name, counts: counts, tables: tables };
+    } };
+
     A['today.summary'] = { role: 'staff', write: false, fn: function (p, user) {
       var today = p.today ? reqDate(p.today, 'Today') : todayStr();
       var yesterday = addDays(today, -1);
@@ -1694,6 +1720,13 @@ var RestoCore = (function () {
           { key: 'team', done: active(db.read('Users')).some(function (u) { return u.role !== 'owner'; }) }
         ];
         setup = { done: steps.filter(function (x) { return x.done; }).length, total: steps.length, steps: steps };
+        // Backups: the free database keeps none, so remind the owner after a month (once there is data).
+        var hasData = db.read('Ingredients').length || db.read('Menu').length || db.read('Sales').length;
+        if (hasData) {
+          var last = trim(st.lastBackupDate) || trim(st.lastBackupAt).slice(0, 10);
+          var since = last ? dayCount(last, today) - 1 : null;
+          if (since === null || since >= BACKUP_REMINDER_DAYS) tasks.push({ kind: 'backup', n: 1, days: since });
+        }
       }
       var todayClose = closes[today] ? closes[today].row : null;
       return { day: { date: today, closed: !!todayClose, closedBy: todayClose ? todayClose.closedBy : '', closedAt: todayClose ? todayClose.closedAt : '' },
