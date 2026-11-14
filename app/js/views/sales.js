@@ -1,5 +1,5 @@
 // Sales: daily entry by dish, day totals, void (managers).
-import { call } from '../api.js';
+import { call, newRequestId } from '../api.js';
 import {
   html, mount, icon, money, number, pct, today, addDays, relDay, fmtDate, timeOf, $, $$, openSheet, confirmSheet,
   toast, busy, options, emptyState,
@@ -118,30 +118,40 @@ function batchSheet(ctx, rows) {
   });
 }
 
-function entrySheet(ctx) {
+/**
+ * Sales entry for one day. Quantities are kept per channel, so a whole day (dine-in, takeaway and each
+ * delivery app) can be entered in one go; saving posts one entry per channel that has quantities.
+ */
+export function openSales(ctx, { date, onSaved } = {}) { return entrySheet(ctx, { date, onSaved }); }
+
+function entrySheet(ctx, opts = {}) {
   const boot = ctx.state.boot;
   const menu = boot.menu.filter((m) => m.active);
   if (!menu.length) return toast(t('sales.noMenuText'), 'bad');
   const channels = (boot.channels || []).filter((c) => c.active);
   let channelId = (channels[0] || {}).id;
-  const priceOf = (m) => (m.prices && m.prices[channelId] !== undefined ? m.prices[channelId] : m.price);
+  const priceOf = (m, cid = channelId) => (m.prices && m.prices[cid] !== undefined ? m.prices[cid] : m.price);
   const cats = {};
   menu.forEach((m) => (cats[m.category || t('common.other')] ||= []).push(m));
-  const qtys = {};
-  // Promotions running on the chosen date and channel (the server checks again when saving).
-  const promoOn = new Set();
-  const pq = {}; // `${promoId}|${menuItemId}` (or `${promoId}|*` for a bundle) → quantity
+  // Per channel: dish quantities, promotions switched on, and promo-line quantities
+  // (`${promoId}|${menuItemId}`, or `${promoId}|*` for a bundle).
+  const qtysBy = {}, pqBy = {}, promoBy = {};
+  const Q = (cid = channelId) => (qtysBy[cid] ||= {});
+  const PQ = (cid = channelId) => (pqBy[cid] ||= {});
+  const ON = (cid = channelId) => (promoBy[cid] ||= new Set());
   const weekday = (d) => new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10))).getUTCDay();
-  const runs = (p, date) => p.status !== 'draft' && p.status !== 'cancelled' && date >= p.startDate && (!p.endDate || date <= p.endDate)
-    && (!p.weekdays.length || p.weekdays.includes(weekday(date))) && (!p.channelIds.length || p.channelIds.includes(channelId));
+  const runs = (p, date, cid) => p.status !== 'draft' && p.status !== 'cancelled' && date >= p.startDate && (!p.endDate || date <= p.endDate)
+    && (!p.weekdays.length || p.weekdays.includes(weekday(date))) && (!p.channelIds.length || p.channelIds.includes(cid));
+  const startDate = opts.date || day;
 
   openSheet({
     title: t('sales.add'),
     body: html`<form id="f" novalidate>
       <div class="form-row">
-        <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${day}" max="${today()}"></label>
+        <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${startDate}" max="${today()}"></label>
         <label class="field"><span class="label">${t('sales.channel')}</span><select class="select" name="channelId">${options(channels.map((c) => ({ value: c.id, label: c.name })), channelId)}</select></label>
       </div>
+      <p class="small muted" style="margin:-6px 2px 10px">${t('sales.allChannelsHelp')}</p>
       <div id="promo-chips"></div><div id="promo-lines"></div>
       <div class="search" style="margin:0">${icon('search')}<input class="input" type="search" id="q" placeholder="${t('sales.findDish')}" aria-label="${t('sales.findDish')}"></div>
       <div class="dish-grid">${Object.keys(cats).sort().map((c) => html`<div data-cat>
@@ -158,41 +168,55 @@ function entrySheet(ctx) {
       <button class="btn primary" id="save">${t('sales.save')}</button>`,
     onMount(el, close) {
       const form = el.querySelector('#f');
-      const ch = () => channels.find((c) => c.id === channelId);
-      const promoUnit = (p, dishId) => {
+      const chOf = (cid) => channels.find((c) => c.id === cid);
+      const promoUnit = (p, dishId, cid = channelId) => {
         const items = p.type === 'bundle' ? p.items : p.items.filter((i) => i.menuItemId === dishId);
-        const e = econFor(boot, { ...p, items }, ch());
+        const e = econFor(boot, { ...p, items }, chOf(cid));
         return e.rows[0] || null;
+      };
+      // Totals for one channel: { total, count }.
+      const channelTotals = (cid) => {
+        let total = 0, count = 0;
+        Object.entries(Q(cid)).forEach(([id, q]) => { const m = menu.find((x) => x.id === id); total += q * priceOf(m, cid); count += q; });
+        Object.entries(PQ(cid)).forEach(([key, q]) => {
+          const [pid, dishId] = key.split('|');
+          const p = (boot.promotions || []).find((x) => x.id === pid);
+          const u = p && promoUnit(p, dishId, cid);
+          if (u) total += q * u.credited;
+          count += p && p.type === 'bundle' ? q * p.items.reduce((a, i) => a + (i.qty || 1), 0) : q;
+        });
+        return { total, count };
       };
       const update = () => {
         let total = 0, count = 0;
-        Object.entries(qtys).forEach(([id, q]) => { const m = menu.find((x) => x.id === id); total += q * priceOf(m); count += q; });
-        Object.entries(pq).forEach(([key, q]) => {
-          const [pid, dishId] = key.split('|');
-          const p = boot.promotions.find((x) => x.id === pid);
-          const u = p && promoUnit(p, dishId);
-          if (u) total += q * u.credited;
-          count += p && p.type === 'bundle' ? q * p.items.reduce((a, i) => a + (i.qty || 1), 0) : q;
+        channels.forEach((c) => {
+          const x = channelTotals(c.id);
+          total += x.total; count += x.count;
+          const opt = form.channelId.querySelector(`option[value="${c.id}"]`);
+          if (opt) opt.textContent = x.count ? `${c.name} · ${x.count}` : c.name;
         });
         el.querySelector('#total').textContent = money(total);
         el.querySelector('#count').textContent = t('sales.nItems', { n: count });
       };
-      const stepperHtml = (key, label) => html`<div class="stepper"><button type="button" data-pstep="-1" data-key="${key}" aria-label="${t('sales.oneLess', { name: label })}">${icon('minus')}</button>
-        <input type="number" inputmode="numeric" min="0" step="1" value="${pq[key] || ''}" placeholder="0" data-pkey="${key}" aria-label="${t('sales.qtyOf', { name: label })}">
+      const stepperHtml = (key, label) => html`<div class="stepper${PQ()[key] ? ' has-value' : ''}"><button type="button" data-pstep="-1" data-key="${key}" aria-label="${t('sales.oneLess', { name: label })}">${icon('minus')}</button>
+        <input type="number" inputmode="numeric" min="0" step="1" value="${PQ()[key] || ''}" placeholder="0" data-pkey="${key}" aria-label="${t('sales.qtyOf', { name: label })}">
         <button type="button" data-pstep="1" data-key="${key}" aria-label="${t('sales.oneMore', { name: label })}">${icon('plus')}</button></div>`;
       const drawPromos = () => {
         const date = form.date.value;
-        const avail = (boot.promotions || []).filter((p) => runs(p, date));
-        // Drop promotions that no longer apply to this date or channel.
-        [...promoOn].forEach((pid) => {
-          if (avail.some((p) => p.id === pid)) return;
-          promoOn.delete(pid);
-          Object.keys(pq).filter((k) => k.startsWith(pid + '|')).forEach((k) => delete pq[k]);
+        // A changed date can end a promotion on any channel: drop its quantities everywhere.
+        channels.forEach((c) => {
+          [...ON(c.id)].forEach((pid) => {
+            const p = (boot.promotions || []).find((x) => x.id === pid);
+            if (p && runs(p, date, c.id)) return;
+            ON(c.id).delete(pid);
+            Object.keys(PQ(c.id)).filter((k) => k.startsWith(pid + '|')).forEach((k) => delete PQ(c.id)[k]);
+          });
         });
+        const avail = (boot.promotions || []).filter((p) => runs(p, date, channelId));
         mount(el.querySelector('#promo-chips'), avail.length ? html`<div class="small muted" style="margin:0 2px 6px">${t('sales.promosToday')}</div>
           <div class="chips" role="group" aria-label="${t('sales.promosToday')}">${avail.map((p) =>
-            html`<button type="button" class="chip" data-promo="${p.id}" aria-pressed="${promoOn.has(p.id)}">${p.name}</button>`)}</div>` : '');
-        const on = avail.filter((p) => promoOn.has(p.id));
+            html`<button type="button" class="chip" data-promo="${p.id}" aria-pressed="${ON().has(p.id)}">${p.name}</button>`)}</div>` : '');
+        const on = avail.filter((p) => ON().has(p.id));
         mount(el.querySelector('#promo-lines'), on.length ? html`<div class="card" style="margin-bottom:12px">${on.map((p) => {
           if (p.type === 'bundle') {
             const u = promoUnit(p);
@@ -209,28 +233,39 @@ function entrySheet(ctx) {
           });
         })}</div>` : '');
         $$('[data-promo]', el).forEach((b) => b.addEventListener('click', () => {
-          if (promoOn.has(b.dataset.promo)) {
-            promoOn.delete(b.dataset.promo);
-            Object.keys(pq).filter((k) => k.startsWith(b.dataset.promo + '|')).forEach((k) => delete pq[k]);
-          } else promoOn.add(b.dataset.promo);
+          if (ON().has(b.dataset.promo)) {
+            ON().delete(b.dataset.promo);
+            Object.keys(PQ()).filter((k) => k.startsWith(b.dataset.promo + '|')).forEach((k) => delete PQ()[k]);
+          } else ON().add(b.dataset.promo);
           drawPromos();
         }));
         const setP = (key, v) => {
           v = Math.max(0, Math.floor(Number(v) || 0));
-          if (v) pq[key] = v; else delete pq[key];
+          if (v) PQ()[key] = v; else delete PQ()[key];
           const input = el.querySelector(`[data-pkey="${key}"]`);
           if (input) { input.value = v || ''; input.closest('.stepper').classList.toggle('has-value', !!v); }
           update();
         };
-        $$('[data-pstep]', el).forEach((b) => b.addEventListener('click', () => setP(b.dataset.key, (pq[b.dataset.key] || 0) + Number(b.dataset.pstep))));
+        $$('[data-pstep]', el).forEach((b) => b.addEventListener('click', () => setP(b.dataset.key, (PQ()[b.dataset.key] || 0) + Number(b.dataset.pstep))));
         $$('[data-pkey]', el).forEach((i) => i.addEventListener('input', () => setP(i.dataset.pkey, i.value)));
         update();
+      };
+      // Show the chosen channel's prices and quantities on the dish rows.
+      const showChannel = () => {
+        $$('[data-dish]', el).forEach((row) => {
+          const m = menu.find((x) => x.id === row.dataset.dish);
+          const v = Q()[m.id] || 0;
+          row.querySelector('[data-price]').textContent = money(priceOf(m));
+          row.querySelector('input').value = v || '';
+          row.querySelector('.stepper').classList.toggle('has-value', !!v);
+        });
+        drawPromos();
       };
       $$('[data-dish]', el).forEach((row) => {
         const input = row.querySelector('input');
         const set = (v) => {
           v = Math.max(0, Math.floor(Number(v) || 0));
-          if (v) qtys[row.dataset.dish] = v; else delete qtys[row.dataset.dish];
+          if (v) Q()[row.dataset.dish] = v; else delete Q()[row.dataset.dish];
           input.value = v || '';
           row.querySelector('.stepper').classList.toggle('has-value', !!v);
           update();
@@ -238,14 +273,7 @@ function entrySheet(ctx) {
         row.querySelectorAll('[data-step]').forEach((b) => b.addEventListener('click', () => set((Number(input.value) || 0) + Number(b.dataset.step))));
         input.addEventListener('input', () => set(input.value));
       });
-      form.channelId.addEventListener('change', () => {
-        channelId = form.channelId.value;
-        $$('[data-dish]', el).forEach((row) => {
-          const m = menu.find((x) => x.id === row.dataset.dish);
-          row.querySelector('[data-price]').textContent = money(priceOf(m));
-        });
-        drawPromos();
-      });
+      form.channelId.addEventListener('change', () => { channelId = form.channelId.value; showChannel(); });
       form.date.addEventListener('change', drawPromos);
       drawPromos();
       el.querySelector('#q').addEventListener('input', (e) => {
@@ -253,19 +281,40 @@ function entrySheet(ctx) {
         $$('[data-dish]', el).forEach((r) => r.classList.toggle('hidden', !!q && !r.dataset.name.includes(q)));
         $$('[data-cat]', el).forEach((c) => c.classList.toggle('hidden', !c.querySelector('[data-dish]:not(.hidden)')));
       });
+      // One id per channel for this sheet: a retry after a timeout can't save a channel twice.
+      const rid = newRequestId();
+      let savedChannels = 0, savedTotal = 0;
+      const redrawBehind = async () => { await ctx.refresh(); if (opts.onSaved) opts.onSaved(); else { day = form.date.value; render(ctx); } };
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
-        const lines = Object.entries(qtys).map(([menuItemId, qty]) => ({ menuItemId, qty }));
-        Object.entries(pq).forEach(([key, qty]) => {
-          const [promoId, dishId] = key.split('|');
-          lines.push(dishId === '*' ? { promoId, qty } : { promoId, menuItemId: dishId, qty });
-        });
-        const r = await call('sales.add', { date: form.date.value, channelId: form.channelId.value, lines });
+        const date = form.date.value;
+        const todo = channels.map((c) => {
+          const lines = Object.entries(Q(c.id)).map(([menuItemId, qty]) => ({ menuItemId, qty }));
+          Object.entries(PQ(c.id)).forEach(([key, qty]) => {
+            const [promoId, dishId] = key.split('|');
+            lines.push(dishId === '*' ? { promoId, qty } : { promoId, menuItemId: dishId, qty });
+          });
+          return { c, lines };
+        }).filter((x) => x.lines.length);
+        if (!todo.length) throw new Error(t('sales.nothingToSave'));
+        let noRecipe = [];
+        for (const { c, lines } of todo) {
+          try {
+            const r = await call('sales.add', { date, channelId: c.id, lines }, { requestId: `${rid}:${date}:${c.id}` });
+            savedChannels++; savedTotal += r.total;
+            noRecipe = noRecipe.concat(r.noRecipe || []);
+            delete qtysBy[c.id]; delete pqBy[c.id]; delete promoBy[c.id];
+          } catch (err) {
+            // Keep this channel's quantities so nothing has to be typed again; show what was saved behind the sheet.
+            if (savedChannels) await redrawBehind();
+            channelId = c.id; form.channelId.value = c.id; showChannel();
+            throw new Error(savedChannels ? t('sales.channelFailed', { channel: c.name, message: err.message }) : err.message);
+          }
+        }
         close();
-        day = form.date.value;
-        toast(t('sales.savedToast', { total: money(r.total) }));
-        if (r.noRecipe.length) setTimeout(() => toast(t('sales.noRecipeWarn', { names: r.noRecipe.join(', ') }), 'info', 6000), 400);
-        await ctx.refresh();
-        render(ctx);
+        day = date;
+        toast(t('sales.savedToast', { total: money(savedTotal) }));
+        if (noRecipe.length) setTimeout(() => toast(t('sales.noRecipeWarn', { names: [...new Set(noRecipe)].join(', ') }), 'info', 6000), 400);
+        await redrawBehind();
       }, form));
     },
   });

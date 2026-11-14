@@ -168,11 +168,35 @@ export function toast(message, kind = 'good', ms = 3200, action = null) {
 
 const openSheets = [];
 let ignorePops = 0;
+const settleQueue = [];
 window.addEventListener('popstate', () => {
-  if (ignorePops) { ignorePops--; return; }
+  if (ignorePops) { ignorePops--; if (!ignorePops) settleQueue.splice(0).forEach((fn) => fn()); return; }
   const top = openSheets[openSheets.length - 1];
   if (top) top.close(true);
 });
+
+/** Run fn once a sheet that just closed has finished stepping back in history. */
+export function whenHistorySettled(fn) { if (ignorePops) settleQueue.push(fn); else fn(); }
+
+/**
+ * Register a full-screen overlay with the back button/gesture (like a sheet).
+ * Returns close(fromPop): call it when the overlay closes itself; onBack runs either way.
+ */
+export function registerOverlay(onBack) {
+  history.pushState({ sheet: true }, '');
+  let closed = false;
+  const api = {
+    close(fromPop) {
+      if (closed) return;
+      closed = true;
+      openSheets.splice(openSheets.indexOf(api), 1);
+      if (!fromPop && history.state && history.state.sheet) { ignorePops++; history.back(); }
+      onBack();
+    },
+  };
+  openSheets.push(api);
+  return api.close;
+}
 
 /**
  * Bottom sheet dialog.
@@ -287,4 +311,26 @@ export function foodCostPill(pctVal, target) {
   const t = Number(target) || 30;
   const cls = pctVal <= t ? 'good' : pctVal <= t + 5 ? 'warn' : 'bad';
   return html`<span class="pill ${cls}">${pct(pctVal)}</span>`;
+}
+
+/** Recently used ids (per device), newest first — for "recent" shortcuts in entry forms. */
+export function recentIds(key) {
+  try { return JSON.parse(localStorage.getItem(`ro.recent.${key}`) || '[]'); } catch { return []; }
+}
+export function pushRecent(key, ids, max = 8) {
+  const list = [...new Set([...(Array.isArray(ids) ? ids : [ids]).filter(Boolean), ...recentIds(key)])].slice(0, max);
+  try { localStorage.setItem(`ro.recent.${key}`, JSON.stringify(list)); } catch { /* storage blocked */ }
+}
+
+/** Print only the given content (SOPs, reports): the rest of the app is hidden on paper. */
+export function printHtml(content) {
+  document.getElementById('print-root')?.remove();
+  const root = document.createElement('div');
+  root.id = 'print-root';
+  mount(root, content);
+  document.body.append(root);
+  document.body.classList.add('printing');
+  const done = () => { document.body.classList.remove('printing'); root.remove(); window.removeEventListener('afterprint', done); };
+  window.addEventListener('afterprint', done);
+  window.print();
 }

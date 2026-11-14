@@ -126,7 +126,7 @@ function breakdownHtml(lines) {
     <div class="share-top"><span>${l.name}</span>
       ${l.error === 'unit' ? html`<span class="warn-text small">${icon('alert')}${t('recipe.cantConvert')}</span>`
         : html`<span><b>${money(l.cost)}</b> <span class="muted small">${pct(l.share, 0)}</span></span>`}</div>
-    <div class="cost-bar" aria-hidden="true"><span style="width:${Math.max(0, Math.min(100, l.share))}%;background:var(--brand)"></span></div>
+    <div class="cost-bar" aria-hidden="true"><span style="width:${Math.max(0, Math.min(100, l.share))}%;background:var(--brand-bright)"></span></div>
   </li>`);
 }
 

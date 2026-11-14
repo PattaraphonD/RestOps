@@ -16,7 +16,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '1.6.0';
+  var VERSION = '1.7.1';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -70,7 +70,9 @@ var RestoCore = (function () {
       'campaignCommissionPct', 'status', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
     PromotionItems: ['id', 'promoId', 'menuItemId', 'qty'],
     // Standard operating procedure steps for a dish or a prep (ownerId).
-    SopSteps: ['id', 'ownerId', 'stepNo', 'text', 'minutes', 'imageUrl', 'critical']
+    SopSteps: ['id', 'ownerId', 'stepNo', 'text', 'minutes', 'imageUrl', 'critical'],
+    // One row per closed trading day (the end-of-day routine).
+    DayCloses: ['id', 'date', 'closedBy', 'closedAt', 'salesTotal', 'wasteValue', 'countLines', 'note']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
@@ -391,6 +393,7 @@ var RestoCore = (function () {
     [/^Promotion "([\s\S]*)" isn't running on this date and channel\.$/, function (m) { return 'โปรโมชัน "' + m[1] + '" ไม่ได้ใช้ในวันและช่องทางนี้'; }],
     [/^Dish isn't in this promotion\.$/, 'เมนูนี้ไม่อยู่ในโปรโมชัน'],
     [/^Unknown allergen\.$/, 'ไม่รู้จักสารก่อภูมิแพ้นี้'],
+    [/^You can't close a day that hasn't happened yet\.$/, 'ปิดยอดวันที่ยังมาไม่ถึงไม่ได้'],
     [/^Step (\d+): write what to do\.$/, 'ขั้นตอนที่ $1: กรุณาเขียนวิธีทำ'],
     [/^Too many steps \(max (\d+)\)\.$/, 'ขั้นตอนมากเกินไป (ไม่เกิน $1)'],
     [/^Image link must start with http:\/\/ or https:\/\/\.$/, 'ลิงก์รูปต้องขึ้นต้นด้วย http:// หรือ https://'],
@@ -613,7 +616,7 @@ var RestoCore = (function () {
           total += res.cost;
           var bi = book.byId[r.ingredientId];
           return {
-            ingredientId: r.ingredientId, name: ing ? ing.name : '(removed ingredient)', kind: bi ? bi.kind : 'raw',
+            ingredientId: r.ingredientId, name: ing ? ing.name : '(วัตถุดิบที่ถูกลบ)', kind: bi ? bi.kind : 'raw',
             unit: unit, stockUnit: ing ? ing.unit : '', qty: num(r.qty),
             yieldPct: yl === '' ? (bi ? bi.yieldPct : 100) : yl,
             grossQty: round(res.grossQty, 4), cost: round(res.cost, 4), rawCost: res.cost, share: 0, error: res.error || ''
@@ -918,7 +921,7 @@ var RestoCore = (function () {
       if (bool(row.voided)) fail('VALIDATION', label + ' is already voided.');
       var note = trim(row.note);
       var patch = { voided: true };
-      if (SCHEMA[table].indexOf('note') >= 0) patch.note = (note ? note + ' · ' : '') + 'Voided by ' + user.username + ' ' + nowIso().slice(0, 10);
+      if (SCHEMA[table].indexOf('note') >= 0) patch.note = (note ? note + ' · ' : '') + 'ยกเลิกโดย ' + user.username + ' ' + nowIso().slice(0, 10);
       db.updateWhere(table, function (r) { return r.id === id; }, patch);
       return row;
     }
@@ -1570,6 +1573,88 @@ var RestoCore = (function () {
         indicative: sold < 5 || days < 14, items: items };
     } };
 
+    /* Daily routine: what needs doing today, and closing the day */
+    A['day.close'] = { role: 'staff', write: true, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      // The client's date can be a few hours ahead of the server's (UTC+7), not more.
+      if (today > addDays(todayStr(), 1)) today = addDays(todayStr(), 1);
+      var date = reqDate(p.date);
+      if (date > today) fail('VALIDATION', "You can't close a day that hasn't happened yet.");
+      var sales = live(db.read('Sales')).filter(function (r) { return r.date === date; });
+      var moves = live(db.read('StockMovements')).filter(function (r) { return r.date === date; });
+      var row = { date: date, closedBy: user.username, closedAt: nowIso(),
+        salesTotal: round(sum(sales, function (r) { return num(r.total); })),
+        wasteValue: round(Math.abs(sum(moves.filter(function (r) { return r.type === 'waste'; }), function (r) { return num(r.value); }))),
+        countLines: moves.filter(function (r) { return r.type === 'count'; }).length,
+        note: optStr(p.note, 300) };
+      var existing = db.read('DayCloses').filter(function (r) { return r.date === date; })[0];
+      if (existing) {
+        db.updateWhere('DayCloses', function (r) { return r.id === existing.id; }, row);
+        row.id = existing.id;
+      } else {
+        row.id = newId('DAY');
+        db.append('DayCloses', [row]);
+      }
+      return row;
+    } };
+
+    A['day.status'] = { role: 'staff', write: false, fn: function (p) {
+      var date = reqDate(p.date);
+      var r = db.read('DayCloses').filter(function (x) { return x.date === date; })[0];
+      return r ? { date: date, closed: true, closedBy: r.closedBy, closedAt: r.closedAt, note: r.note || '',
+        salesTotal: num(r.salesTotal), wasteValue: num(r.wasteValue), countLines: num(r.countLines) }
+        : { date: date, closed: false };
+    } };
+
+    A['today.summary'] = { role: 'staff', write: false, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var yesterday = addDays(today, -1);
+      var manager = ROLES[user.role] >= ROLES.manager;
+      var closes = byId(db.read('DayCloses').map(function (r) { return { id: r.date, row: r }; }));
+      var tasks = [];
+      var pos = db.read('PurchaseOrders').filter(function (x) {
+        return (x.status === 'sent' || x.status === 'partial') && trim(x.expectedDate) && x.expectedDate <= today;
+      });
+      if (pos.length) tasks.push({ kind: 'deliveries', n: pos.length });
+      if (manager) {
+        var inv = db.read('SupplierInvoices').filter(function (i) { return i.status === 'exception' || i.status === 'noPo'; });
+        if (inv.length) tasks.push({ kind: 'invoices', n: inv.length });
+      }
+      var stock = stockLevels().filter(function (i) { return i.active; });
+      var preps = stock.filter(function (i) { return i.kind === 'prep' && i.trackStock && i.onHand <= i.minLevel && i.minLevel > 0; });
+      if (preps.length) tasks.push({ kind: 'preps', n: preps.length, items: preps.slice(0, 6).map(function (i) {
+        return { id: i.id, name: i.name, onHand: i.onHand, minLevel: i.minLevel, unit: i.unit }; }) });
+      var low = stock.filter(function (i) { return i.kind !== 'prep' && i.status !== 'ok'; });
+      if (low.length) tasks.push({ kind: 'lowStock', n: low.length });
+      if (manager) {
+        var soon = addDays(today, 3);
+        var ending = promoRows(today).filter(function (x) { return x.status === 'active' && x.endDate && x.endDate <= soon; });
+        if (ending.length) tasks.push({ kind: 'promotionsEnding', n: ending.length, items: ending.map(function (x) {
+          return { id: x.id, name: x.name, endDate: x.endDate }; }) });
+      }
+      var hadSales = live(db.read('Sales')).some(function (r) { return r.date === yesterday; });
+      var yClosed = !!closes[yesterday];
+      if (hadSales && !yClosed) tasks.push({ kind: 'closeYesterday', n: 1, items: [{ date: yesterday }] });
+      var setup = null;
+      if (user.role === 'owner') {
+        var st = settings();
+        var ch = channelRows().filter(function (c) { return c.active; });
+        var dishes = menuWithCost().filter(function (m) { return m.active && m.recipe.length; });
+        var steps = [
+          { key: 'restaurant', done: !!trim(st.restaurantName) && st.restaurantName !== DEFAULT_SETTINGS.restaurantName && !!trim(st.currency) },
+          { key: 'channels', done: ch.length > 0 && ch.every(function (c) { return c.type !== 'delivery' || c.commissionPct > 0; }) },
+          { key: 'suppliers', done: active(db.read('Suppliers')).length >= 1 },
+          { key: 'ingredients', done: stock.filter(function (i) { return i.kind !== 'prep'; }).length >= 5 },
+          { key: 'dishes', done: dishes.length >= 1 },
+          { key: 'team', done: active(db.read('Users')).some(function (u) { return u.role !== 'owner'; }) }
+        ];
+        setup = { done: steps.filter(function (x) { return x.done; }).length, total: steps.length, steps: steps };
+      }
+      var todayClose = closes[today] ? closes[today].row : null;
+      return { day: { date: today, closed: !!todayClose, closedBy: todayClose ? todayClose.closedBy : '', closedAt: todayClose ? todayClose.closedAt : '' },
+        yesterdayClosed: yClosed, tasks: tasks, setup: setup };
+    } };
+
     /* SOP manuals */
     function safeLink(v) {
       var s = optStr(v, 500);
@@ -1645,7 +1730,7 @@ var RestoCore = (function () {
       var items = {};
       db.read('PromotionItems').forEach(function (r) {
         (items[r.promoId] = items[r.promoId] || []).push({ menuItemId: r.menuItemId,
-          name: names[r.menuItemId] ? names[r.menuItemId].name : '(removed dish)', qty: num(r.qty) || 1 });
+          name: names[r.menuItemId] ? names[r.menuItemId].name : '(เมนูที่ถูกลบ)', qty: num(r.qty) || 1 });
       });
       return db.read('Promotions').map(function (r) {
         var type = trim(r.type);

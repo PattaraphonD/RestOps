@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v5';
+const KEY = 'ro.demo.db.v7';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -511,6 +511,8 @@ function seed(api, db, lang) {
     if (inv === overdueOne || inv.dueDate >= today) return;
     as('invoices.pay', { id: inv.id, date: inv.dueDate, method: pay[1], reference: 'TRF' + inv.invoiceNo.replace(/\D/g, '') });
   });
+  // Every past trading day was closed, except yesterday — so Home asks someone to close it.
+  for (let d = start; d < D(today, -1); d = D(d, 1)) as('day.close', { date: d, today });
   // Today's purchasing state: a delivery due today, and a draft order waiting to be sent.
   buy(today, ['shrimp', 'pork'], { receive: false });
   const draft = restockLines(['oil', 'sugar', 'fishsauce', 'cup']);

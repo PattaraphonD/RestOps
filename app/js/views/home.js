@@ -1,6 +1,7 @@
 // Home: dashboard (managers/owners) or today's overview (staff).
 import { call } from '../api.js';
-import { html, mount, icon, money, pct, today, fmtMonth, fmtDate, number, $, emptyState } from '../ui.js';
+import { html, mount, icon, money, pct, today, fmtMonth, fmtDate, timeOf, number, $, $$, emptyState, printHtml } from '../ui.js';
+import { produceSheet } from './production.js';
 import { cashFlowChart, barList } from '../charts.js';
 import { t } from '../i18n.js';
 
@@ -30,30 +31,75 @@ const quickActions = (canManage) => html`
     ${tile('#/sales/new', 'receipt', t('nav.sales'))}
     ${tile('#/orders/receive', 'truck', t('po.receive'))}
     ${tile('#/stock/waste', 'waste', t('type.waste'))}
-    ${canManage ? tile('#/more/expenses/new', 'wallet', t('home.expense')) : tile('#/stock/usage', 'fork', t('type.usage'))}
+    ${canManage ? tile('#/more/expenses/new', 'wallet', t('home.expense')) : tile('#/more/sop', 'clipboard', t('sop.short'))}
   </div>`;
 
-/** Purchasing items that need someone's attention (deliveries due, invoices to check or pay). */
-function purchasingAlerts(pc, pay, manager) {
-  if (!pc) return '';
-  const out = [];
-  if (pc.expectedToday) out.push(html`<a class="alert-card warn" href="#/orders/receive" style="margin-top:12px">${icon('truck')}
-    <span class="grow">${t('home.deliveriesDue', { n: pc.expectedToday })}<div class="small" style="font-weight:500;opacity:.85">${t('home.deliveriesDueSub')}</div></span>${icon('chevR', 'chev')}</a>`);
-  if (manager && pc.toReview) out.push(html`<a class="alert-card" href="#/orders/invoices" style="margin-top:12px">${icon('receipt')}
-    <span class="grow">${t('home.invoicesToReview', { n: pc.toReview })}${pay ? html`<div class="small" style="font-weight:500;opacity:.85">${money(pay.toReview)}</div>` : ''}</span>${icon('chevR', 'chev')}</a>`);
-  if (manager && pc.overdue) out.push(html`<a class="alert-card" href="#/orders/invoices" style="margin-top:12px">${icon('wallet')}
-    <span class="grow">${t('home.overdueBills', { n: pc.overdue })}${pay ? html`<div class="small" style="font-weight:500;opacity:.85">${money(pay.overdue)}</div>` : ''}</span>${icon('chevR', 'chev')}</a>`);
-  return out;
+/* ------------------------------------------------------------ today */
+
+const TASK = {
+  deliveries: { icon: 'truck', cls: 'warn', href: () => '#/orders/receive' },
+  invoices: { icon: 'receipt', cls: 'bad', href: () => '#/orders/invoices' },
+  overdueBills: { icon: 'wallet', cls: 'bad', href: () => '#/orders/invoices' },
+  lowStock: { icon: 'alert', cls: 'warn', href: () => '#/stock/low' },
+  preps: { icon: 'chef', cls: 'warn', href: () => null },
+  promotionsEnding: { icon: 'info', cls: '', href: () => '#/menu/promotions' },
+  closeYesterday: { icon: 'clipboard', cls: 'bad', href: (x) => `#/close/${x.items[0].date}` },
+};
+
+/** "งานวันนี้": what this person should do now, each row one tap from the place to do it. */
+function todayCard(sum, extra = []) {
+  if (!sum) return '';
+  const tasks = [...sum.tasks, ...extra];
+  const row = (x) => {
+    const m = TASK[x.kind] || { icon: 'info', cls: '', href: () => null };
+    const sub = x.kind === 'preps' ? x.items.map((i) => i.name).join(', ')
+      : x.kind === 'promotionsEnding' ? x.items.map((i) => `${i.name} (${fmtDate(i.endDate)})`).join(', ')
+        : x.kind === 'closeYesterday' ? fmtDate(x.items[0].date, { weekday: 'long', day: 'numeric', month: 'long' }) : (x.sub || '');
+    const body = html`<span class="avatar ${m.cls}">${icon(m.icon)}</span>
+      <span class="grow"><div class="title">${t(`today.task.${x.kind}`, { n: x.n })}</div>${sub ? html`<div class="sub">${sub}</div>` : ''}</span>${icon('chevR', 'chev')}`;
+    const href = m.href(x);
+    return html`<li>${href ? html`<a class="row" href="${href}">${body}</a>` : html`<button class="row" data-task="${x.kind}">${body}</button>`}</li>`;
+  };
+  const d = sum.day;
+  return html`<section class="section today-card">
+    <div class="section-head"><h2>${t('today.title')}</h2><span class="small muted">${fmtDate(d.date, { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
+    <div class="card">
+      ${tasks.length ? html`<ul class="list">${tasks.map(row)}</ul>`
+        : html`<div class="row" style="min-height:64px"><span class="avatar good">${icon('check')}</span><span class="grow"><div class="title">${t('today.allClear')}</div><div class="sub">${t('today.allClearSub')}</div></span></div>`}
+      <div style="padding:12px 14px;border-top:1px solid var(--line)">
+        ${d.closed ? html`<a class="btn block" href="#/close">${icon('check')}${t('today.closed', { who: d.closedBy, time: timeOf(d.closedAt) })}</a>`
+          : html`<a class="btn accent block" href="#/close">${icon('clipboard')}${t('today.closeDay')}</a>`}
+      </div>
+    </div></section>`;
 }
 
-function lowStockAlert(boot) {
-  const low = boot.ingredients.filter((i) => i.active && i.status !== 'ok');
-  if (!low.length) return '';
-  const out = low.filter((i) => i.status === 'out').length;
-  return html`<a class="alert-card ${out ? '' : 'warn'}" href="#/stock/low" style="margin-top:12px">
-    ${icon('alert')}<span class="grow">${t('home.lowAlert', { n: low.length })}${out ? html` · ${t('home.outAlert', { n: out })}` : ''}
-    <div class="small" style="font-weight:500;opacity:.85">${low.slice(0, 3).map((i) => i.name).join(', ')}${low.length > 3 ? '…' : ''}</div></span>
-    ${icon('chevR', 'chev')}</a>`;
+const SETUP_HREF = { restaurant: '#/more/settings', channels: '#/more/channels', suppliers: '#/more/suppliers', ingredients: '#/stock', dishes: '#/menu', team: '#/more/team' };
+function setupCard(setup) {
+  let hidden = false;
+  try { hidden = localStorage.getItem('ro.setup.hidden') === '1'; } catch { /* storage blocked */ }
+  if (!setup || hidden || setup.done >= setup.total) return '';
+  return html`<section class="section" id="setup-card"><div class="card pad">
+    <div style="display:flex;align-items:center;gap:10px"><b class="grow">${t('setup.title')}</b>
+      <span class="small muted">${t('setup.progress', { done: setup.done, total: setup.total })}</span>
+      <button class="btn ghost sm" id="setup-hide">${t('setup.hide')}</button></div>
+    <div class="cost-bar" style="margin:10px 0 12px" aria-hidden="true"><span style="width:${Math.round(setup.done / setup.total * 100)}%;background:var(--brand-bright)"></span></div>
+    <ul class="list" style="margin:0 -14px -14px">${setup.steps.map((x) => html`<li><a class="row" href="${SETUP_HREF[x.key]}">
+      <span class="avatar ${x.done ? 'good' : ''}">${icon(x.done ? 'check' : 'plus')}</span>
+      <span class="grow"><div class="title" style="${x.done ? 'text-decoration:line-through;opacity:.6' : ''}">${t(`setup.step.${x.key}`)}</div>
+        ${x.done ? '' : html`<div class="sub">${t(`setup.help.${x.key}`)}</div>`}</span>${x.done ? '' : icon('chevR', 'chev')}</a></li>`)}</ul>
+  </div></section>`;
+}
+/** The Today tasks; null (no card) if the backend hasn't been redeployed with today.summary yet. */
+function todaySummary(d) {
+  return call('today.summary', { today: d }).catch((err) => { console.warn('today.summary', err); return null; });
+}
+function wireToday(ctx, host, sum) {
+  $$('[data-task="preps"]', host).forEach((b) => b.addEventListener('click', () => {
+    const p = (sum.tasks.find((x) => x.kind === 'preps') || { items: [] }).items[0];
+    produceSheet(ctx, p && p.id);
+  }));
+  const hide = host.querySelector('#setup-hide');
+  if (hide) hide.addEventListener('click', () => { try { localStorage.setItem('ro.setup.hidden', '1'); } catch { /* ignore */ } host.querySelector('#setup-card')?.remove(); });
 }
 
 export async function render(ctx) {
@@ -80,7 +126,8 @@ export async function render(ctx) {
     render(ctx);
   }));
 
-  const r = await call('reports.summary', { month, today: today() });
+  const [r, sum] = await Promise.all([call('reports.summary', { month, today: today() }),
+    month === today().slice(0, 7) ? todaySummary(today()) : null]);
   if (ctx.stale() || !$('#dash')) return;
   const tot = r.totals, p = r.previous;
   const target = Number(boot.settings.targetFoodCostPct) || 30;
@@ -96,6 +143,8 @@ export async function render(ctx) {
     : t('home.vsLastMonth');
 
   mount($('#dash'), html`
+    ${isCurrent && sum ? html`${setupCard(sum.setup)}
+    ${todayCard(sum, r.purchasing && r.purchasing.overdue ? [{ kind: 'overdueBills', n: r.purchasing.overdue, sub: money(r.payables.overdue) }] : [])}` : ''}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${t('home.revenue')} · ${fmtMonth(month, false)}</div>
         <div class="val tabular">${money(tot.revenue, { cents: false })}</div>
@@ -113,8 +162,6 @@ export async function render(ctx) {
       <div class="card kpi"><div class="label">${t('home.stockOnHand')}</div>
         <div class="val">${money(r.stockValue, { cents: false })}</div><div class="delta">${t('home.atCurrentCost')}</div></div>
     </div>
-    ${lowStockAlert(boot)}
-    ${isCurrent ? purchasingAlerts(r.purchasing, r.payables, true) : ''}
     ${(r.attention || []).length ? html`<section class="section">
       <div class="section-head"><h2>${icon('alert')} ${t('home.attention')}</h2><a class="link" href="#/menu/pricing">${t('menu.tabPricing')}</a></div>
       <p class="small muted" style="margin:-4px 4px 8px">${t('home.attentionHelp')}</p>
@@ -126,7 +173,7 @@ export async function render(ctx) {
     </section>` : ''}
     <div class="section">${quickActions(true)}</div>
 
-    <section class="section">
+    <div class="grid-2"><section class="section">
       <div class="section-head"><h2>${t('home.cashFlow')}</h2><span class="small muted">${fmtMonth(month, false)} · ${t('home.daily')}</span></div>
       <div class="card pad">
         ${r.cashFlow.some((d) => d.cashIn || d.cashOut) ? html`<div id="cf"></div>` : emptyState('chart', t('home.noCashTitle'), t('home.noCashText'))}
@@ -141,15 +188,15 @@ export async function render(ctx) {
     <section class="section">
       <div class="section-head"><h2>${t('home.topSellers')}</h2><a class="link" href="#/menu">${t('home.menuCosting')}</a></div>
       <div class="card pad">${r.topItems.length ? html`<div id="top"></div>` : emptyState('receipt', t('home.noSalesMonthTitle'), t('home.noSalesMonthText'))}</div>
-    </section>
+    </section></div>
 
-    ${showChannels ? html`<section class="section">
+    <div class="grid-2">${showChannels ? html`<section class="section">
       <div class="section-head"><h2>${t('home.byChannel')}</h2><a class="link" href="#/menu/analysis">${t('menu.tabAnalysis')}</a></div>
       <div class="card pad"><div id="bych"></div></div>
     </section>` : ''}
 
     <section class="section">
-      <div class="section-head"><h2>${t('home.pl')}</h2><span class="small muted">${fmtMonth(month)}</span></div>
+      <div class="section-head"><h2>${t('home.pl')}</h2><button class="btn ghost sm" id="print-report">${t('report.print')}</button></div>
       <div class="card">
         <div class="pl-row"><span>${t('home.revenue')}</span><b>${money(tot.revenue)}</b></div>
         <div class="pl-row indent"><span>${t('home.foodCostRecipes')}</span><span>−${money(tot.cogs)}</span></div>
@@ -161,7 +208,7 @@ export async function render(ctx) {
         <div class="pl-row total"><span>${t('home.netProfit')}</span><span style="${tot.netProfit < 0 ? 'color:var(--bad-ink)' : ''}">${money(tot.netProfit)}</span></div>
       </div>
       <p class="small muted" style="margin:8px 4px 0">${t('home.plNote', { amount: money(tot.purchases, { cents: false }) })}</p>
-    </section>
+    </section></div>
 
     <section class="section">
       <div class="section-head"><h2>${t('home.monthly')}</h2><span class="small muted">${t('home.last6')}</span></div>
@@ -177,6 +224,8 @@ export async function render(ctx) {
         </table></div></div>
     </section>`);
 
+  wireToday(ctx, el, sum);
+  $('#print-report').addEventListener('click', () => printHtml(monthlyReport(boot, r, month, target)));
   const cf = $('#cf');
   if (cf) cashFlowChart(cf, r.cashFlow);
   const bych = $('#bych');
@@ -195,11 +244,12 @@ export async function render(ctx) {
   }
 }
 
-async function renderStaff({ el, state, stale }) {
+async function renderStaff(ctx) {
+  const { el, state, stale } = ctx;
   const boot = state.boot;
   const d = today();
   mount(el, html`<div id="staff"><div class="skeleton" style="height:120px"></div></div>`);
-  const s = await call('sales.list', { from: d, to: d });
+  const [s, sum] = await Promise.all([call('sales.list', { from: d, to: d }), todaySummary(d)]);
   if (stale() || !$('#staff')) return;
   const low = boot.ingredients.filter((i) => i.active && i.status !== 'ok');
   mount($('#staff'), html`
@@ -207,7 +257,7 @@ async function renderStaff({ el, state, stale }) {
       <div class="card kpi hero"><div class="label">${icon('receipt')}${t('home.todaySales')}</div>
         <div class="val">${money(s.total, { cents: false })}</div><div class="delta">${t('home.itemsSold', { n: s.dishes })}</div></div>
     </div>
-    ${purchasingAlerts(boot.purchasing, null, false)}
+    ${todayCard(sum)}
     <div class="section">${quickActions(false)}</div>
     <section class="section">
       <div class="section-head"><h2>${t('home.needsRestock')}</h2><a class="link" href="#/stock">${t('home.allStock')}</a></div>
@@ -217,4 +267,36 @@ async function renderStaff({ el, state, stale }) {
           <span class="value">${number(i.onHand, 3)} ${i.unit}</span></a></li>`)}</ul>`
         : emptyState('check', t('stock.allStockedTitle'), t('stock.allStockedText'))}</div>
     </section>`);
+  wireToday(ctx, el, sum);
+}
+
+/** A one-page monthly report for the owner, an accountant or a partner (printed on A4). */
+function monthlyReport(boot, r, month, target) {
+  const tot = r.totals;
+  const gross = tot.revenue - tot.cogs - (tot.commissions || 0) - tot.wasteAndVariance;
+  const row = (label, value, strong) => html`<tr${strong ? html` class="total"` : ''}><td>${label}</td><td class="num">${value}</td></tr>`;
+  return html`<section class="report-print">
+    <header><div class="small">${boot.settings.restaurantName}</div><h1>${t('report.title', { month: fmtMonth(month) })}</h1>
+      <div class="small">${t('report.generated', { date: fmtDate(today(), { day: 'numeric', month: 'long', year: 'numeric' }) })}</div></header>
+    <div class="report-kpis">
+      <div><span>${t('home.revenue')}</span><b>${money(tot.revenue, { cents: false })}</b></div>
+      <div><span>${t('home.foodCost')}</span><b>${pct(tot.foodCostPct)}</b><small>${t('home.target', { n: target })}</small></div>
+      <div><span>${t('home.netProfit')}</span><b>${money(tot.netProfit, { cents: false })}</b></div>
+      <div><span>${t('report.margin')}</span><b>${tot.revenue ? pct(tot.netProfit / tot.revenue * 100) : '—'}</b></div>
+    </div>
+    <h2>${t('home.pl')}</h2>
+    <table>${row(t('home.revenue'), money(tot.revenue))}
+      ${row(t('home.foodCostRecipes'), '−' + money(tot.cogs))}
+      ${row(t('home.wasteVariance'), (tot.wasteAndVariance >= 0 ? '−' : '+') + money(Math.abs(tot.wasteAndVariance)))}
+      ${tot.commissions ? row(t('home.commissions'), '−' + money(tot.commissions)) : ''}
+      ${row(t('home.grossProfit'), money(gross), true)}
+      ${r.expenseCategories.map((c) => row(c.category, '−' + money(c.amount)))}
+      ${row(t('home.netProfit'), money(tot.netProfit), true)}</table>
+    ${(r.byChannel || []).length ? html`<h2>${t('home.byChannel')}</h2><table><tr><th>${t('report.channel')}</th><th class="num">${t('home.revenue')}</th><th class="num">${t('report.commission')}</th><th class="num">${t('report.cm')}</th></tr>
+      ${r.byChannel.map((c) => html`<tr><td>${c.channelId ? c.name : t('common.other')}</td><td class="num">${money(c.revenue, { cents: false })}</td><td class="num">${money(c.commission, { cents: false })}</td><td class="num">${money(c.cm, { cents: false })}</td></tr>`)}</table>` : ''}
+    ${r.topItems.length ? html`<h2>${t('home.topSellers')}</h2><table><tr><th>${t('report.dish')}</th><th class="num">${t('report.qty')}</th><th class="num">${t('home.revenue')}</th><th class="num">${t('home.foodCost')}</th></tr>
+      ${r.topItems.slice(0, 10).map((i) => html`<tr><td>${i.name}</td><td class="num">${number(i.qty, 0)}</td><td class="num">${money(i.revenue, { cents: false })}</td><td class="num">${pct(i.foodCostPct)}</td></tr>`)}</table>` : ''}
+    <h2>${t('home.monthly')}</h2><table><tr><th>${t('home.colMonth')}</th><th class="num">${t('home.revenue')}</th><th class="num">${t('home.colFood')}</th><th class="num">${t('home.colExpenses')}</th><th class="num">${t('home.netProfit')}</th></tr>
+      ${r.trend.slice().reverse().map((m) => html`<tr><td>${fmtDate(m.month + '-01', { month: 'short', year: '2-digit' })}</td><td class="num">${money(m.revenue, { cents: false })}</td><td class="num">${pct(m.foodCostPct)}</td><td class="num">${money(m.expenses, { cents: false })}</td><td class="num">${money(m.netProfit, { cents: false })}</td></tr>`)}</table>
+  </section>`;
 }

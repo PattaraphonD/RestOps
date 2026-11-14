@@ -166,7 +166,7 @@ function sessions_() {
  * Creates every tab with its header row, default settings and the first owner account.
  * The owner's temporary password is shown in the execution log. Safe to run again.
  */
-function setup() { return setup_('en'); }
+function setup() { return setup_('th'); }
 
 /** Same as setup(), but fills Settings with Thai channel, category and unit lists. */
 function setupThai() { return setup_('th'); }

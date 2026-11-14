@@ -1,6 +1,6 @@
 // SOP manuals: step-by-step kitchen instructions built from each dish's or prep's recipe.
 import { call } from '../api.js';
-import { html, raw, mount, icon, number, $$, openSheet, toast, busy, emptyState, unitLabel } from '../ui.js';
+import { html, raw, mount, icon, number, $$, openSheet, toast, busy, emptyState, unitLabel, printHtml, registerOverlay, whenHistorySettled } from '../ui.js';
 import { t } from '../i18n.js';
 
 const C = () => window.RestoCosting;
@@ -73,15 +73,7 @@ function shareText(boot, o, steps, n) {
 
 /** Print one or more SOPs, one per page; only the SOPs appear on paper. */
 export function printSops(boot, ids, stepsMap, n = 1) {
-  document.getElementById('print-root')?.remove();
-  const root = document.createElement('div');
-  root.id = 'print-root';
-  mount(root, html`${ids.map((id) => { const o = ownerOf(boot, id); return o ? html`<section class="sop-print">${sopBody(boot, o, stepsMap[id] || [], n)}</section>` : ''; })}`);
-  document.body.append(root);
-  document.body.classList.add('printing');
-  const done = () => { document.body.classList.remove('printing'); root.remove(); window.removeEventListener('afterprint', done); };
-  window.addEventListener('afterprint', done);
-  window.print();
+  printHtml(html`${ids.map((id) => { const o = ownerOf(boot, id); return o ? html`<section class="sop-print">${sopBody(boot, o, stepsMap[id] || [], n)}</section>` : ''; })}`);
 }
 
 export async function sopSheet(ctx, id) {
@@ -98,8 +90,9 @@ export async function sopSheet(ctx, id) {
           <input type="number" inputmode="numeric" min="1" max="50" step="1" value="1" id="sop-n" aria-label="${o.kind === 'dish' ? t('sop.portions') : t('sop.batches')}">
           <button type="button" data-n="1" aria-label="${t('sop.more')}">${icon('plus')}</button></div></div>
       <div id="sop-body"></div>`,
-    foot: html`<button class="btn" data-sop="print">${t('sop.print')}</button><button class="btn" data-sop="share">${t('sop.share')}</button>
-      ${ctx.can('manager') ? html`<button class="btn primary" data-sop="edit">${icon('edit')}${t('sop.edit')}</button>` : ''}`,
+    foot: html`<button class="btn primary" data-sop="kitchen">${icon('chef')}${t('sop.kitchen')}</button>
+      <button class="btn" data-sop="print">${t('sop.print')}</button><button class="btn" data-sop="share">${t('sop.share')}</button>
+      ${ctx.can('manager') ? html`<button class="btn" data-sop="edit">${icon('edit')}${t('sop.edit')}</button>` : ''}`,
     onMount(el, close) {
       const draw = () => mount(el.querySelector('#sop-body'), sopBody(boot, o, steps, n));
       const input = el.querySelector('#sop-n');
@@ -108,6 +101,7 @@ export async function sopSheet(ctx, id) {
       input.addEventListener('input', () => set(input.value));
       $$('[data-sop]', el).forEach((b) => b.addEventListener('click', async () => {
         if (b.dataset.sop === 'print') return printSops(boot, [id], { [id]: steps }, n);
+        if (b.dataset.sop === 'kitchen') { close(); return whenHistorySettled(() => kitchenMode(boot, o, steps, n)); }
         if (b.dataset.sop === 'edit') { close(); return sopEditor(ctx, id); }
         const text = shareText(boot, o, steps, n);
         try {
@@ -231,4 +225,123 @@ export async function renderManual(ctx) {
   el.querySelector('#mq').addEventListener('input', (e) => { q = e.target.value.trim().toLowerCase(); draw(); });
   el.querySelector('#print-all').addEventListener('click', () => printSops(boot, [...dishes, ...preps].map((x) => x.id), steps));
   draw();
+}
+
+/**
+ * Kitchen mode: a full-screen, big-type view for cooking from an SOP on a shared tablet.
+ * One step at a time, large buttons, a step timer, and the screen kept awake while it is open.
+ */
+function kitchenMode(boot, o, steps, n) {
+  let i = 0, timer = null, left = 0, lock = null, closed = false;
+  const lines = scaledLines(boot, o, n);
+  const box = document.createElement('div');
+  box.className = 'kitchen';
+  box.setAttribute('role', 'dialog');
+  box.setAttribute('aria-modal', 'true');
+  box.setAttribute('aria-label', t('sop.kitchenTitle', { name: o.item.name }));
+  document.body.append(box);
+  document.body.style.overflow = 'hidden';
+  // Keep the screen on while cooking (ignored where the browser doesn't support or allow it).
+  // The lock drops when the tablet switches apps, so ask again when the page is visible.
+  const keepAwake = () => {
+    if (closed || document.visibilityState !== 'visible') return;
+    try {
+      navigator.wakeLock && navigator.wakeLock.request('screen')
+        .then((l) => { if (closed) l.release().catch(() => {}); else lock = l; }).catch(() => {});
+    } catch { /* not available */ }
+  };
+  keepAwake();
+  const stopTimer = () => { if (timer) clearInterval(timer); timer = null; };
+  const fmt = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  const teardown = () => {
+    closed = true;
+    stopTimer();
+    try { lock && lock.release(); } catch { /* ignore */ }
+    lock = null;
+    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('visibilitychange', keepAwake);
+    window.removeEventListener('hashchange', onRoute);
+    document.body.style.overflow = '';
+    box.remove();
+  };
+  // Back gesture or a route change closes kitchen mode like a sheet.
+  const release = registerOverlay(teardown);
+  const close = () => release();
+  const onRoute = () => release(true);
+  window.addEventListener('hashchange', onRoute);
+  document.addEventListener('visibilitychange', keepAwake);
+  const go = (d) => { const j = Math.min(steps.length - 1, Math.max(0, i + d)); if (j !== i) { i = j; stopTimer(); draw(); } };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowRight') go(1);
+    else if (e.key === 'ArrowLeft') go(-1);
+  };
+  document.addEventListener('keydown', onKey);
+  function draw() {
+    const s = steps[i];
+    const last = i === steps.length - 1;
+    mount(box, html`
+      <header class="kitchen-head"><div class="grow"><div class="kitchen-name">${o.item.name}</div>
+        <div class="kitchen-sub">${o.kind === 'dish' ? t('sop.yieldDish', { n }) : t('sop.batchesN', { n })}</div></div>
+        <button class="btn kitchen-close" data-k="close">${icon('x')}${t('common.close')}</button></header>
+      <div class="kitchen-body">
+        <aside class="kitchen-ings"><h3>${t('sop.ingredients')}</h3><ul>${lines.map((l) => html`<li><span>${l.name}</span><b>${number(l.qty, 3)} ${unitLabel(l.unit)}</b></li>`)}</ul></aside>
+        <section class="kitchen-step${s && s.critical ? ' critical' : ''}" aria-live="polite">
+          ${steps.length ? html`
+            <div class="kitchen-count">${t('sop.stepOf', { n: i + 1, total: steps.length })}</div>
+            ${s.critical ? html`<div class="pill bad kitchen-crit">${icon('alert')}${t('sop.critical')}</div>` : ''}
+            <p class="kitchen-text">${s.text}</p>
+            ${s.minutes ? html`<button class="btn kitchen-timer" data-k="timer">${timer ? fmt(left) : t('sop.startTimer', { n: s.minutes })}</button>` : ''}`
+            : html`<p class="kitchen-text">${t('sop.noSteps')}</p>`}
+        </section>
+      </div>
+      <footer class="kitchen-foot">
+        ${steps.length > 1 ? html`<button class="btn kitchen-nav" data-k="prev" ${i === 0 ? raw('disabled') : ''}>${icon('chevL')}${t('sop.prev')}</button>` : ''}
+        ${last || !steps.length ? html`<button class="btn primary kitchen-nav" data-k="close">${icon('check')}${t('sop.finished')}</button>`
+          : html`<button class="btn primary kitchen-nav" data-k="next">${t('sop.next')}${icon('chevR')}</button>`}
+      </footer>`);
+    box.querySelectorAll('[data-k]').forEach((b) => b.addEventListener('click', () => {
+      const k = b.dataset.k;
+      if (k === 'close') return close();
+      if (k === 'prev') return go(-1);
+      if (k === 'next') return go(1);
+      if (k === 'timer') {
+        if (timer) { stopTimer(); return draw(); }
+        left = (Number(steps[i].minutes) || 0) * 60;
+        timer = setInterval(() => {
+          left -= 1;
+          const tb = box.querySelector('[data-k=timer]');
+          if (left <= 0) {
+            stopTimer();
+            try { navigator.vibrate && navigator.vibrate([300, 150, 300]); } catch { /* ignore */ }
+            beep();
+            toast(t('sop.timerDone', { n: i + 1 }), 'good', 6000);
+            draw();
+            return;
+          }
+          if (tb) tb.textContent = fmt(left);
+        }, 1000);
+        draw();
+      }
+    }));
+  }
+  draw();
+  box.querySelector('[data-k=close]').focus();
+}
+
+/** Three short beeps for a finished step timer (most tablets can't vibrate). */
+function beep() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    const ac = new Ctx();
+    [0, 0.35, 0.7].forEach((at) => {
+      const o = ac.createOscillator(), g = ac.createGain();
+      o.frequency.value = 880; o.connect(g); g.connect(ac.destination);
+      g.gain.setValueAtTime(0.3, ac.currentTime + at);
+      g.gain.exponentialRampToValueAtTime(0.001, ac.currentTime + at + 0.25);
+      o.start(ac.currentTime + at); o.stop(ac.currentTime + at + 0.26);
+    });
+    setTimeout(() => ac.close().catch(() => {}), 1500);
+  } catch { /* no audio */ }
 }

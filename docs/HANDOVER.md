@@ -1,7 +1,7 @@
 # Restaurant Ops: Developer Handover
 
-**Version:** 1.6.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
-**Status (2026-11-14):** feature-complete v1. **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. **Layer 2 (v1.4) — channel pricing and menu analysis:** sales channels as records with commission and packaging, a price per channel, commission on every sale and in the P&L, suggested prices, menu engineering and a Needs attention card. Layer 2 screens were checked by script in demo mode in English and Thai; their phone-width layout still needs a visual check. **Layer 3 (v1.5) — promotions:** a builder with a live profit check, a delivery-app offer check with a counter-offer, promo lines in sales entry (per dish, bundles, buy-X-get-Y) and results against the previous 4 weeks. Checked the same way; phone-width layout not yet checked by eye. **Layer 4 (v1.6) — SOP manuals:** step-by-step procedures for dishes and preps built from their recipes, quantities scaled by portions or batches, allergens derived from ingredients, critical food-safety steps, print (one SOP per page or the whole manual) and share. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
+**Version:** 1.7.1 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
+**Status (2026-11-14):** feature-complete v1. **v1.6.1:** Thai only — the English text and the language switch were removed. **v1.7.0 — daily journeys** (see `docs/ux/2026-11-14-user-journeys.md`): Home is a Today screen with tasks per role and a setup checklist; a close-the-day routine; sales for all channels in one entry; ingredient search and recent items; kitchen mode for SOPs; a wide-screen layout (left rail ≥ 900 px); a printable monthly report; five tabs (วันนี้ · สต็อก · เมนู · ยอดขาย · เพิ่มเติม, with Orders under More). **Upgrading to v1.7.0: redeploy the Apps Script backend** (new actions `today.summary`, `day.close`, `day.status`; the DayCloses tab is created on first use). Until then Home still loads, without the Today card. **v1.7.1 — palette theme:** teal #439093 · coral #F09B93 · cream #F9EBD9 · blush #EBD6D7 · yellow #E9DD8A, with deeper shades where text sits on a colour (all AA); roles and contrast in `docs/superpowers/specs/2026-11-14-palette-theme-design.md`. Colours live only in the tokens at the top of `app/css/app.css` (light and dark). **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. **Layer 2 (v1.4) — channel pricing and menu analysis:** sales channels as records with commission and packaging, a price per channel, commission on every sale and in the P&L, suggested prices, menu engineering and a Needs attention card. Layer 2 screens were checked by script in demo mode in English and Thai; their phone-width layout still needs a visual check. **Layer 3 (v1.5) — promotions:** a builder with a live profit check, a delivery-app offer check with a counter-offer, promo lines in sales entry (per dish, bundles, buy-X-get-Y) and results against the previous 4 weeks. Checked the same way; phone-width layout not yet checked by eye. **Layer 4 (v1.6) — SOP manuals:** step-by-step procedures for dishes and preps built from their recipes, quantities scaled by portions or batches, allergens derived from ingredients, critical food-safety steps, print (one SOP per page or the whole manual) and share. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
 
 This document is for the developer taking over the project. For end-user setup, see [README.md](../README.md).
 
@@ -21,7 +21,7 @@ A phone app for a restaurant's back office:
 | Reports | Dashboard: revenue, today's sales, food cost % vs target, net profit, stock value, daily cash flow chart, top sellers, monthly P&L, 6-month summary. |
 | Purchasing | Reorder suggestions → purchase orders → send (LINE/email/SMS/print) → receive deliveries against the PO → supplier invoices with 3-way matching → approve/dispute → pay; payables view. |
 | Team | Owner / Manager / Staff roles and logins. |
-| Languages | English and Thai, chosen per phone. |
+| Language | Thai only (no language switch since v1.6.1). |
 
 **Users:** owner, managers and kitchen/floor staff of a single restaurant, mostly on phones.
 
@@ -69,8 +69,9 @@ app/                         ← deployable PWA (Vercel Root Directory = this fo
   js/pricing.js              pure pricing maths: price rounding, channel economics, menu engineering (shared with server)
   js/api.js                  API client: remote (fetch) or demo transport; session storage
   js/demo.js                 demo backend (core.js + localStorage) and sample-data seeder
-  js/i18n.js                 English + Thai dictionaries, default lists, t(), locale()
-  js/app.js                  shell: routing, nav, login screen, language switch, state
+  js/i18n.js                 Thai dictionary, default lists, t(), locale() (always th-TH)
+  js/app.js                  shell: routing, nav (bottom bar; left rail ≥ 900 px), login screen, state
+  js/views/close.js          close the day: sales (all channels) → waste → count key items → close
   js/ui.js                   html`` (auto-escaping templates), formatting, icons, sheets, toasts
   js/charts.js               SVG charts: cash-flow (in/out bars), bar list
   js/views/home.js           dashboard (manager+) / today view (staff)
@@ -92,7 +93,7 @@ tools/
   build_backend.py           core.js → Core.gs, costing.js → Costing.gs, pricing.js → Pricing.gs (in backend/)
   test_core.js               test runner for core.js + costing.js (node tools/test_core.js)
   tests/*.test.js            the tests, against an in-memory db
-  check_i18n.py              fails if any text key is missing in EN or TH
+  check_i18n.py              fails if any text key used in the app is missing
   make_icons.py              regenerates PNG icons (stdlib only)
 docs/HANDOVER.md             this file
 README.md                    user-facing setup guide
@@ -126,6 +127,7 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | **Promotions** | id, name, type, value, channelIds, startDate, endDate, weekdays, platformFundedPct, campaignCommissionPct, status, note, createdAt, createdBy, updatedAt, updatedBy, version | type: percentOff / amountOff / fixedPrice / bundle / buyXGetY (value "2+1"). Stored status: draft / scheduled / cancelled; shown as scheduled / active / ended by date. Blank channelIds or weekdays = all |
 | **PromotionItems** | id, promoId, menuItemId, qty | The dishes a promotion covers (qty only matters for bundles) |
 | **SopSteps** | id, ownerId, stepNo, text, minutes, imageUrl, critical | Steps of a dish's or prep's SOP; replaced as a whole on each `sop.save` |
+| **DayCloses** | id, date, closedBy, closedAt, salesTotal, wasteValue, countLines, note | One row per closed trading day; closing again updates the row |
 | **Expenses** | id, date, category, description, amount, paymentMethod, note, voided, createdAt, createdBy | |
 | **PurchaseOrders** | id, poNumber, supplierId, status, orderDate, expectedDate, note, total, sentAt, sentBy, closedAt, closedBy, closeReason, createdAt, createdBy, updatedAt, updatedBy, version | status: draft → sent → partial → received; or closed (short) / cancelled |
 | **PurchaseOrderLines** | id, poId, ingredientId, qtyOrdered, unitPrice, note | Replaced as a whole while the PO is a draft |
@@ -150,7 +152,7 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | `byproduct` | positive | something useful left over (e.g. chicken fat from stock), valued at its cost |
 
 **Conventions**
-- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN, CHN, MPR, PRM, PRI, SOP).
+- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN, CHN, MPR, PRM, PRI, SOP, DAY).
 - Units in recipe, prep and conversion lines are stored as a unit code (`g`, `kg`, `ml`, `l`, `pcs` …) when the text is a known unit or alias, otherwise as typed. An ingredient's own stock unit is stored as typed (`กก.` in Thai).
 - Dates are `YYYY-MM-DD` text; timestamps are ISO-8601 text. `TEXT_COLUMNS` are formatted as plain text by `setup()` so Sheets doesn't convert them. `Server.gs` also converts any `Date` cells back on read.
 - Booleans are `TRUE`/`FALSE`. Read them with `bool()` in core.
@@ -264,6 +266,9 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 | `promotions.cancel` | manager | ✓ | id |
 | `sop.save` | manager | ✓ | ownerId (dish or prep), version, notes {portionNote, holdingNote, equipment, prepMinutes, photoUrl}, steps[{text, minutes?, imageUrl?, critical?}] → {version, steps} |
 | `sop.list` | staff | | none → {ownerId: steps[]} |
+| `today.summary` | staff | | today → {day, yesterdayClosed, tasks[{kind, n, items?}], setup (owner)}; kinds: deliveries, invoices (manager+), preps, lowStock, promotionsEnding (manager+), closeYesterday |
+| `day.close` | staff | ✓ | date (not in the future), today, note? → the DayCloses row (sales total, waste value, count lines) |
+| `day.status` | staff | | date → {closed, closedBy, closedAt, note, …} |
 | `promotions.results` | manager | | id, today → before/during per day, change %, verdict, daily margin |
 | `channels.save` | manager | ✓ | item {id?, version?, name, type, commissionPct (0–99.9), packagingCost, commissionOnDiscounted, active, sortOrder}; the last active channel can't be turned off |
 | `production.add` | staff | ✓ | date, prepId, batches, producedQty, producedBy (username), note?, inputs?[{ingredientId, qty, unit}], byproducts?[{ingredientId, qty, unit}] → {run, warnings} |
@@ -321,9 +326,9 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 - **Charts** are hand-built SVG with hover/tap tooltips. The colours come from a colour-blind-checked palette (`--series-1`, `--series-2`).
 - **Offline:** the service worker caches the app shell (network-first). Reading cached screens works offline; **saving requires a connection**, and there is no offline queue.
 - **Theme:** light, dark, or follow the system (`ro.theme` in localStorage).
-- **i18n:** `t(key, vars)` in `i18n.js`. Values are strings with `{var}` or functions (for English plurals). Thai mode formats with `th-TH` (Buddhist-era years). User data is stored exactly as typed. Server errors are translated in `core.js` (`translate()`).
+- **i18n:** `t(key, vars)` in `i18n.js`. Values are strings with `{var}` or functions. Everything formats with `th-TH` (Buddhist-era years). The app always sends `lang: 'th'`, so server errors come back in Thai. User data is stored exactly as typed. Server errors are translated in `core.js` (`translate()`).
 
-**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v5` (v1.3–v1.6 changed the sample data, so older demo data is ignored and the demo reseeds).
+**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.theme`, `ro.demo.db.v7` (v1.3–v1.7 changed the sample data, so older demo data is ignored and the demo reseeds).
 
 ---
 
@@ -333,7 +338,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 python tools/serve.py
 ```
 
-Open http://localhost:5173 and tap **Explore with demo data**. Demo accounts are `owner`, `manager` and `staff`, all with password `demo1234`. The sample data is seeded in the current language; **More → My account → Reset demo data** reseeds it.
+Open http://localhost:5173 and tap **Explore with demo data**. Demo accounts are `owner`, `manager` and `staff`, all with password `demo1234`. The sample data is seeded in Thai; **More → My account → Reset demo data** reseeds it.
 
 Before every handover or release:
 
@@ -359,7 +364,7 @@ The demo seeds 62 days of history: purchases, orders and invoices, daily sales, 
 
 | Piece | Where | How to update |
 |---|---|---|
-| Database | A Google Sheet in the owner's Google account | `setup()` / `setupThai()` adds missing tabs and is safe to re-run |
+| Database | A Google Sheet in the owner's Google account | `setup()` (Thai lists; `setupThai()` is the same) adds missing tabs and is safe to re-run |
 | API | Apps Script bound to that Sheet | Paste `Server.gs`, `Core.gs`, `Costing.gs`, `appsscript.json` → **Deploy → Manage deployments → Edit → New version** (keeps the URL) |
 | App | Vercel, https://restops-app.vercel.app/ (Root Directory `app`) | Redeploy from the Vercel dashboard or CLI (`vercel --prod` from `app/`), or push to the connected git branch |
 

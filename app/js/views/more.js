@@ -4,8 +4,8 @@ import {
   html, raw, mount, icon, money, today, relDay, fmtMonth, timeOf, $, $$, openSheet, confirmSheet, toast, busy,
   options, emptyState, initials,
 } from '../ui.js';
-import { list, signOut, langSwitch, wireLangSwitch } from '../app.js';
-import { t, getLang, defaults } from '../i18n.js';
+import { list, signOut } from '../app.js';
+import { t, defaults } from '../i18n.js';
 import { renderLog as production } from './production.js';
 import { renderChannels as channels } from './channels.js';
 import { renderManual as sop } from './sop.js';
@@ -30,6 +30,10 @@ function index({ el, setTitle, state, can }) {
     <a class="card row" href="#/more/account" style="margin-top:4px">
       <span class="avatar" style="width:48px;height:48px;font-size:16px">${initials(u.displayName)}</span>
       <span class="grow"><div class="title">${u.displayName}</div><div class="sub">${roleLabel(u.role)} · @${u.username}</div></span>${icon('chevR', 'chev')}</a>
+    <section class="section"><div class="card"><ul class="list">
+      ${item('#/orders', 'truck', t('more.orders'), t(can('manager') ? 'more.ordersSub' : 'more.ordersSubStaff', {
+        n: (state.boot.purchasing || {}).awaiting || 0, due: (state.boot.purchasing || {}).expectedToday || 0 }))}
+    </ul></div></section>
     ${can('manager') ? html`<section class="section"><div class="section-head"><h2>${t('more.money')}</h2></div>
       <div class="card"><ul class="list">
         ${item('#/more/expenses', 'wallet', t('more.expenses'), t('more.expensesSub'))}
@@ -49,7 +53,6 @@ function index({ el, setTitle, state, can }) {
         ${item('#/more/production', 'clipboard', t('production.logTitle'), t('more.productionSub'))}
         ${item('#/more/sop', 'chef', t('sop.manual'), t('sop.manualSub'))}
       </ul></div></section>
-    <section class="section"><div class="section-head"><h2>${t('account.language')}</h2></div>${langSwitch()}</section>
     <section class="section"><div class="card"><ul class="list">
       <li><button class="row" id="install"><span class="avatar">${icon('download')}</span>
         <span class="grow"><div class="title">${t('more.install')}</div><div class="sub">${t('more.installSub')}</div></span></button></li>
@@ -57,7 +60,6 @@ function index({ el, setTitle, state, can }) {
         <span class="grow"><div class="title">${t('more.signOut')}</div></span></button></li>
     </ul></div></section>
     <p class="small muted" style="text-align:center;margin-top:20px">${t('app.name')} ${state.boot.version}${session.mode === 'demo' ? ' · ' + t('more.demoData') : ''}</p>`);
-  wireLangSwitch(el);
   $('#signout').addEventListener('click', signOut);
   $('#install').addEventListener('click', installHelp);
 }
@@ -357,7 +359,6 @@ function account(ctx) {
     <div class="card pad" style="margin-top:4px;display:flex;gap:14px;align-items:center">
       <span class="avatar" style="width:52px;height:52px;font-size:18px">${initials(u.displayName)}</span>
       <div><div style="font-weight:700;font-size:17px">${u.displayName}</div><div class="muted">@${u.username} · ${roleLabel(u.role)}</div></div></div>
-    <section class="section"><div class="section-head"><h2>${t('account.language')}</h2></div>${langSwitch()}</section>
     <section class="section"><div class="section-head"><h2>${t('account.appearance')}</h2></div>
       <div class="seg" role="group" aria-label="${t('account.appearance')}">${['system', 'light', 'dark'].map((th) =>
         html`<button data-theme-opt="${th}" aria-pressed="${theme === th}">${t(`account.theme.${th}`)}</button>`)}</div></section>
@@ -371,7 +372,6 @@ function account(ctx) {
     ${session.mode === 'demo' ? html`<section class="section"><div class="card pad">
       <b>${t('account.demoTitle')}</b><p class="small muted" style="margin:4px 0 12px">${t('account.demoText')}</p>
       <button class="btn danger block" id="reset">${icon('refresh')}${t('account.resetDemo')}</button></div></section>` : ''}`);
-  wireLangSwitch(el);
   $$('[data-theme-opt]', el).forEach((b) => b.addEventListener('click', () => {
     const th = b.dataset.themeOpt;
     try { if (th === 'system') localStorage.removeItem('ro.theme'); else localStorage.setItem('ro.theme', th); } catch { /* ignore */ }
@@ -389,7 +389,7 @@ function account(ctx) {
   });
   const reset = $('#reset');
   if (reset) reset.addEventListener('click', async () => {
-    if (!await confirmSheet({ title: t('account.resetTitle'), message: t('account.resetMessage', { lang: getLang() === 'th' ? 'ไทย' : 'English' }), confirm: t('account.reset'), danger: true })) return;
+    if (!await confirmSheet({ title: t('account.resetTitle'), message: t('account.resetMessage'), confirm: t('account.reset'), danger: true })) return;
     await resetDemo();
     session.clear();
     location.hash = '';

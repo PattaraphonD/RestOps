@@ -6,9 +6,9 @@ A phone app for running a restaurant's back office: **stock, recipe costing, dai
 - **Middle layer:** Google Apps Script, published as a small web API. The app never talks to Google Sheets directly, so no Google credentials ever live on a phone. The script checks logins and roles, and locks every write so two people can't overwrite each other.
 - **Database:** one Google Spreadsheet, one tab per table.
 
-**English and Thai (ภาษาไทย).** Every screen, message and server error is available in both languages. Switch any time from the sign-in screen or **More → Language**. Each phone remembers its own choice, so the kitchen can use Thai while the owner uses English on the same data.
+**Thai (ภาษาไทย) throughout.** Every screen, message and server error is in Thai, with Thai number and date formats (Buddhist-era years, ฿). There is no language switch.
 
-Try it now with no setup: open the app and tap **Explore with demo data**. It loads two months of sample data for a fictional Thai restaurant, in whichever language is selected. Demo data stays on that device only.
+Try it now with no setup: open the app and tap **Explore with demo data**. It loads two months of sample data for a fictional Thai restaurant, in Thai. Demo data stays on that device only.
 
 ---
 
@@ -23,6 +23,7 @@ Try it now with no setup: open the app and tap **Explore with demo data**. It lo
 | **Sales** | Daily entry by dish with +/− steppers, per channel (Dine-in, Takeaway, Grab, LINE MAN…). Each channel uses its own prices, and the delivery-app commission is recorded with every sale. Shows day totals, by-dish breakdown and food cost %. |
 | **Sales channels** | **More → Sales channels**: dine-in, takeaway and delivery apps, each with its commission % and packaging cost per dish. Presets for Grab, LINE MAN, foodpanda, ShopeeFood, Robinhood, Uber Eats, DoorDash, Deliveroo and Just Eat fill a typical rate that you confirm against your contract. |
 | **Channel pricing** | **Menu → Pricing** and each dish's **Prices by channel**: what a dish earns on every channel after commission and packaging, with a suggested price that meets your food-cost target, a one-tap **Use**, and "apply suggested prices" for a whole channel with a preview first. |
+| **Today and close the day** | Home (**วันนี้**) lists what needs doing now — deliveries to receive, preps to make, invoices to check, promotions ending, yesterday not closed — each one tap from where to do it. **ปิดยอดวันนี้** walks through the end of service: sales for every channel in one entry, waste, a quick count of key items, a handover note. New owners get a setup checklist. |
 | **SOP manuals** | **More → SOP manual**, or **SOP** on any dish or prep: step-by-step instructions built from the recipe. Amounts scale with the number of portions or batches, allergens are worked out from the ingredients (set them once in Stock), and food-safety steps are highlighted. Print one SOP per page, the whole manual, or share it to a phone. Staff read; managers edit. |
 | **Promotions** | **Menu → Promotions**: build a % off, amount off, special price, set or buy-X-get-Y promotion and see, as you type, whether each dish is still on target, thin or losing money on each channel, and how many more orders you'd need. **Check an app offer** answers "should I join this Grab campaign?" and suggests the largest discount you can afford. Promo sales are entered as their own lines; **Results** compares each promotion with the 4 weeks before it, for the promoted dishes and the whole restaurant. |
 | **Menu analysis** | **Menu → Analysis**: menu engineering over any period and channel. Every dish is a Star (popular, high margin), Plowhorse (popular, low margin), Puzzle (high margin, rarely ordered) or Dog, with what to do about it. The dashboard's **Needs attention** card lists the dishes losing the most margin on a channel. |
@@ -30,7 +31,8 @@ Try it now with no setup: open the app and tap **Explore with demo data**. It lo
 | **Reports** | Dashboard with revenue, today's sales, food cost % vs target, net profit and stock value; daily cash-flow chart (money in vs out); top sellers; sales by channel; monthly profit & loss with channel commissions as their own line; 6-month summary. |
 | **Purchasing** | Reorder suggestions from stock levels, numbered purchase orders sent to suppliers by LINE, email, SMS or a printable PO, and receiving deliveries against the order (partial deliveries supported). Supplier invoices are matched three ways (ordered, received, invoiced) with exceptions to approve or dispute, and there's a payables view (to pay, overdue, due soon). |
 | **Team** | Owner / Manager / Staff roles, per-person logins, password change and reset. |
-| **Languages** | English and Thai, switchable per phone. Thai uses Thai number and date formats (Buddhist-era years, ฿). |
+| **Phone, tablet, laptop** | Phones get the bottom tab bar; on a tablet or laptop (900 px and wider) the menu moves to a left rail and pages use the width. SOPs have a **kitchen mode** for a shared tablet: big type, one step at a time, step timers, the screen kept on. The monthly report prints on A4. |
+| **Language** | Thai only, with Thai number and date formats (Buddhist-era years, ฿). |
 
 ### Roles
 
@@ -77,7 +79,7 @@ app/                      ← the PWA (static files: host these)
   js/core.js              ← ALL business rules (shared with the server)
   js/costing.js           ← costing maths: units, yield, preps (shared with the server)
   js/pricing.js           ← pricing maths: channel margins, suggested prices, menu analysis (shared)
-  js/i18n.js              ← English + Thai text and default lists
+  js/i18n.js              ← all app text (Thai) and default lists
   js/api.js               ← API client (Apps Script or demo)
   js/demo.js              ← demo backend + sample data
   js/app.js, ui.js, charts.js, views/*.js
@@ -92,7 +94,7 @@ tools/
   test_core.js            ← runs the business-logic tests in tools/tests (Node)
   serve.py                ← local preview server
   make_icons.py           ← regenerates the PNG app icons
-  check_i18n.py           ← checks every text exists in English and Thai
+  check_i18n.py           ← checks every text key used in the app exists
 ```
 
 `app/js/core.js` (with `app/js/costing.js` and `app/js/pricing.js`) is the single source of truth for business logic. The demo and the real server run the **same** code. After changing it, run:
@@ -114,7 +116,7 @@ python tools/build_backend.py
    - Click **+ → Script**, name it `Core`, and paste `backend/Core.gs`. Do the same for `Costing` with `backend/Costing.gs` and `Pricing` with `backend/Pricing.gs`.
    - **Project Settings (⚙) → Show "appsscript.json" manifest file in editor**, then replace it with `backend/appsscript.json`. Change `timeZone` if you're not in Thailand.
 4. Select the `setup` function in the toolbar and click **Run**. Approve the permissions.
-   For a Thai restaurant, run **`setupThai`** instead. It is the same, but fills the sales channels, expense, ingredient and menu categories and units with Thai lists.
+   `setup` fills the sales channels, expense, ingredient and menu categories and units with Thai lists (`setupThai` does the same).
    It creates all the tabs and the first **owner** login. The temporary password is shown in the **Execution log**.
 5. **Deploy → New deployment → Select type: Web app**
    - *Execute as:* **Me**
@@ -191,12 +193,12 @@ node tools/test_core.js
 
 Saves for orders, deliveries, invoices and payments carry a request ID, so a retry after a timeout never records them twice.
 
-## Languages
+## Language
 
-- All app text lives in `app/js/i18n.js`, in two dictionaries (`en` and `th`) with the same keys. To change wording, edit it there.
-- After adding or renaming text, run `python tools/check_i18n.py`. It fails if any key is missing from either language.
+- The app is Thai only. All app text lives in `app/js/i18n.js` (one `th` dictionary). To change wording, edit it there.
+- After adding or renaming text, run `python tools/check_i18n.py`. It fails if any key the app uses is missing.
 - Server error messages are written in English in `core.js` and translated to Thai at the end of each request (`TH_RULES` in `core.js`). If you add a new error message, add a Thai rule for it.
-- **Your data** (ingredient names, dishes, categories, suppliers) is stored exactly as typed, so name things in whichever language your team reads. **Settings → Fill lists with … defaults** replaces the category, channel and unit lists with the selected language's defaults.
+- **Your data** (ingredient names, dishes, categories, suppliers) is stored exactly as typed, so name things in whichever language your team reads. **Settings → Fill lists with … defaults** replaces the category and unit lists with the Thai defaults.
 
 ## Releasing an update
 

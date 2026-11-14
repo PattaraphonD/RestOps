@@ -1,7 +1,7 @@
 // App shell: session, routing, navigation, shared state.
 import { call, session, login, logout, setAuthLostHandler } from './api.js';
 import { html, raw, mount, icon, toast, setFormat, busy, showFormError, today, $ } from './ui.js';
-import { t, getLang, setLang, LANGS } from './i18n.js';
+import { t } from './i18n.js';
 
 const ROLES = { staff: 1, manager: 2, owner: 3 };
 const VIEWS = {
@@ -11,11 +11,12 @@ const VIEWS = {
   menu: () => import('./views/menu.js'),
   orders: () => import('./views/purchasing.js'),
   more: () => import('./views/more.js'),
+  close: () => import('./views/close.js'),
 };
 const NAV = [
   ['home', 'nav.home', 'home'],
   ['stock', 'nav.stock', 'box'],
-  ['orders', 'nav.orders', 'truck'],
+  ['menu', 'nav.menu', 'chef'],
   ['sales', 'nav.sales', 'receipt'],
   ['more', 'nav.more', 'grid'],
 ];
@@ -38,12 +39,6 @@ export function can(role) { return !!state.boot && ROLES[state.boot.user.role] >
 export function navigate(hash) { if (location.hash === hash) render(); else location.hash = hash; }
 export function list(csv) { return String(csv || '').split(',').map((s) => s.trim()).filter(Boolean); }
 
-/** Switch language and redraw everything in place. */
-export function changeLanguage(lang) {
-  setLang(lang);
-  if (session.token && state.boot) { $('.app')?.remove(); render(); } else renderLogin();
-}
-
 function route() {
   const parts = (location.hash.replace(/^#\/?/, '') || 'home').split('/').filter(Boolean);
   return { name: VIEWS[parts[0]] ? parts[0] : 'home', params: parts.slice(1) };
@@ -56,7 +51,8 @@ function updateBadges() {
   badge.textContent = n;
   badge.classList.toggle('hidden', !n);
   badge.setAttribute('aria-label', t('nav.lowBadge', { n }));
-  const ob = $('.nav [data-badge="orders"]');
+  // Orders live under More: its badge counts deliveries due (and, for managers, invoices to check or pay).
+  const ob = $('.nav [data-badge="more"]');
   if (ob && state.boot.purchasing) {
     const pc = state.boot.purchasing;
     const m = pc.expectedToday + (can('manager') ? pc.toReview + pc.overdue : 0);
@@ -79,7 +75,7 @@ function shell() {
       <main class="page" id="page" tabindex="-1"></main>
       <nav class="nav" aria-label="${t('nav.main')}">
         ${NAV.map(([key, label, ic]) => html`<a href="#/${key}" data-nav="${key}">${icon(ic)}<span>${t(label)}</span>
-          ${key === 'stock' || key === 'orders' ? html`<span class="badge hidden" data-badge="${key}"></span>` : ''}</a>`)}
+          ${key === 'stock' || key === 'more' ? html`<span class="badge hidden" data-badge="${key}"></span>` : ''}</a>`)}
       </nav>
     </div>`);
   const bar = $('.app-bar');
@@ -117,8 +113,8 @@ export async function render() {
   if (token !== renderToken) return;
   const { name, params } = route();
   document.querySelectorAll('.nav a').forEach((a) => {
-    // Menu lives under More since purchasing got its own tab.
-    if (a.dataset.nav === (name === 'menu' ? 'more' : name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
+    // Orders (purchasing) live under More.
+    if (a.dataset.nav === (name === 'orders' ? 'more' : name === 'close' ? 'home' : name)) a.setAttribute('aria-current', 'page'); else a.removeAttribute('aria-current');
   });
   updateBadges();
   const page = $('#page');
@@ -140,16 +136,6 @@ export async function render() {
 
 /* ----------------------------------------------------------------- login */
 
-export function langSwitch(extraClass = '') {
-  return html`<div class="seg lang-switch ${extraClass}" role="group" aria-label="${t('account.language')}">
-    ${LANGS.map((l) => html`<button type="button" data-lang="${l.code}" aria-pressed="${getLang() === l.code}">${l.label}</button>`)}</div>`;
-}
-export function wireLangSwitch(container) {
-  container.querySelectorAll('[data-lang]').forEach((b) => b.addEventListener('click', () => {
-    if (b.dataset.lang !== getLang()) changeLanguage(b.dataset.lang);
-  }));
-}
-
 function renderLogin() {
   state.boot = null;
   document.title = `${t('login.signIn')} · ${t('app.name')}`;
@@ -157,7 +143,7 @@ function renderLogin() {
   mount(root, html`
     <div class="login">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
-        <div class="brand-mark">${icon('plate')}</div>${langSwitch('compact')}</div>
+        <div class="brand-mark">${icon('plate')}</div></div>
       <h1>${t('app.name')}</h1>
       <p class="lede">${t('login.lede')}</p>
       <form id="login-form" novalidate>
@@ -179,7 +165,6 @@ function renderLogin() {
       </details>
     </div>`);
 
-  wireLangSwitch(root);
   const form = $('#login-form');
   const urlInput = $('#api-url');
   form.addEventListener('submit', (e) => {
@@ -245,6 +230,6 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
   navigator.serviceWorker.register('sw.js').catch(() => { /* app still works without it */ });
 }
 
-setLang(getLang());
+document.documentElement.lang = 'th';
 render();
 offlineBanner();

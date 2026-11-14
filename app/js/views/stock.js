@@ -3,6 +3,7 @@ import { call } from '../api.js';
 import {
   html, raw, mount, icon, money, unitMoney, number, qty, pct, today, relDay, timeOf, $, $$, openSheet, confirmSheet,
   toast, busy, options, emptyState, statusPill, foodCostPill, initials, unitLabel,
+  recentIds, pushRecent,
 } from '../ui.js';
 import { list } from '../app.js';
 import { t } from '../i18n.js';
@@ -353,16 +354,36 @@ function ingredientOptions(ingredients, selected) {
     ${groups[g].map((i) => html`<option value="${i.id}" ${i.id === selected ? raw('selected') : ''}>${i.name} (${unitLabel(i.unit)})</option>`)}</optgroup>`)}`;
 }
 
-function openEntry(ctx, type, ingredientId) {
+/** Open a stock entry form. opts (stock in / usage / waste / count): { date, initialIds: [ingredientId], onSaved } */
+export function openEntry(ctx, type, ingredientId, opts = {}) {
   if (type === 'purchase') return purchaseSheet(ctx, ingredientId);
   if (type === 'produce') return produceSheet({ ...ctx, redraw: () => redraw(ctx) }, ingredientId);
   if (type === 'adjustment' && !ctx.can('manager')) return toast(t('stock.adjustManagerOnly'), 'bad');
-  return movementSheet(ctx, type, ingredientId);
+  return movementSheet(ctx, type, ingredientId, opts);
 }
 
 function lineEditor(host, { ingredients, fields, initial }) {
   // fields: (ing) => html for the inputs under the ingredient select
   let n = 0;
+  // Recently used items: one tap fills the first empty line (or adds a line).
+  const recent = recentIds('ingredients').map((id) => ingredients.find((i) => i.id === id && i.active)).filter(Boolean).slice(0, 6);
+  if (recent.length) {
+    const bar = document.createElement('div');
+    mount(bar, html`<div class="small muted" style="margin:0 2px 6px">${t('stock.recent')}</div>
+      <div class="chips" role="group" aria-label="${t('stock.recent')}">${recent.map((i) => html`<button type="button" class="chip" data-recent="${i.id}">${i.name}</button>`)}</div>`);
+    host.before(bar);
+    bar.querySelectorAll('[data-recent]').forEach((b) => b.addEventListener('click', () => {
+      const empty = $$('.line-item', host).find((w) => !w.querySelector('select').value);
+      const w = empty || add();
+      const f = w.querySelector('[data-find]');
+      if (f && f.value) { f.value = ''; f.dispatchEvent(new Event('input')); }
+      const sel = w.querySelector('select');
+      sel.value = b.dataset.recent;
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      const q = w.querySelector('input[name=qty]');
+      if (q) q.focus();
+    }));
+  }
   const add = (ingredientId = '') => {
     const idx = n++;
     const wrap = document.createElement('div');
@@ -371,6 +392,7 @@ function lineEditor(host, { ingredients, fields, initial }) {
     const ing = ingredients.find((i) => i.id === ingredientId);
     mount(wrap, html`<div class="line-head"><span>${t('stock.item')}</span>
       <button type="button" class="btn ghost sm" data-remove aria-label="${t('stock.removeItem')}">${icon('x')}</button></div>
+      <div class="search" style="margin:0 0 6px">${icon('search')}<input class="input" type="search" data-find placeholder="${t('stock.findIngredient')}" aria-label="${t('stock.findIngredient')}"></div>
       <select class="select" name="ingredientId" aria-label="${t('stock.ingredient')}">${ingredientOptions(ingredients, ingredientId)}</select>
       <div class="form-row" style="margin-top:8px">${fields(ing)}</div>`);
     host.append(wrap);
@@ -378,6 +400,37 @@ function lineEditor(host, { ingredients, fields, initial }) {
       if (host.querySelectorAll('.line-item').length > 1) wrap.remove();
       else wrap.querySelectorAll('input, select').forEach((x) => { x.value = ''; });
       host.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    // Type part of a name or category to narrow the list; a single match is picked straight away.
+    // iOS ignores hidden options, so the list is rebuilt from a copy of the full one.
+    const fullList = wrap.querySelector('select').cloneNode(true);
+    wrap.querySelector('[data-find]').addEventListener('input', (e) => {
+      const q = e.target.value.trim().toLowerCase();
+      const sel = wrap.querySelector('select');
+      const current = sel.value;
+      const matches = (o) => {
+        if (!o.value) return false;
+        const ing2 = ingredients.find((i) => i.id === o.value);
+        return !q || (!!ing2 && (ing2.name + ' ' + (ing2.category || '')).toLowerCase().includes(q));
+      };
+      const keep = (o) => !o.value || o.value === current || matches(o);
+      const visible = [];
+      const take = (o, into) => { const c = o.cloneNode(true); into.push(c); if (matches(o)) visible.push(c); };
+      const kids = [];
+      [...fullList.children].forEach((node) => {
+        if (node.tagName === 'OPTGROUP') {
+          const g = node.cloneNode(false);
+          const opts = [];
+          [...node.children].forEach((o) => { if (keep(o)) take(o, opts); });
+          if (opts.length) { g.append(...opts); kids.push(g); }
+        } else if (keep(node)) take(node, kids);
+      });
+      sel.replaceChildren(...kids);
+      sel.value = current;
+      if (q && visible.length === 1 && sel.value !== visible[0].value) {
+        sel.value = visible[0].value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+      }
     });
     wrap.querySelector('select').addEventListener('change', (e) => {
       const ing2 = ingredients.find((i) => i.id === e.target.value);
@@ -442,6 +495,7 @@ function purchaseSheet(ctx, ingredientId) {
         const r = await call('purchases.add', {
           date: form.date.value, supplierId: form.supplierId.value, invoiceRef: form.invoiceRef.value, note: form.note.value, lines,
         });
+        pushRecent('ingredients', lines.map((l) => l.ingredientId));
         close();
         toast(t('stock.purchaseSaved', { n: r.count, total: money(r.total) }));
         impactToast(ctx, r.impact);
@@ -452,13 +506,13 @@ function purchaseSheet(ctx, ingredientId) {
   });
 }
 
-function movementSheet(ctx, type, ingredientId) {
+function movementSheet(ctx, type, ingredientId, opts = {}) {
   const ings = ctx.state.boot.ingredients;
   openSheet({
     title: t(`stock.title.${type}`),
     body: html`<form id="f" novalidate>
       <p class="small muted" style="margin:0 2px 14px">${t(`stock.help.${type}`)}</p>
-      <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${today()}" max="${today()}"></label>
+      <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${opts.date || today()}" max="${today()}"></label>
       <div id="lines"></div>
       <button type="button" class="btn sm" id="add-line">${icon('plus')}${t('stock.addItem')}</button>
       ${type === 'waste' ? html`<div class="field" style="margin-top:16px"><span class="label">${t('stock.reason')}</span>
@@ -471,12 +525,13 @@ function movementSheet(ctx, type, ingredientId) {
       const form = el.querySelector('#f');
       const host = el.querySelector('#lines');
       const editor = lineEditor(host, {
-        ingredients: ings, initial: ingredientId,
+        ingredients: ings, initial: ingredientId || (opts.initialIds || [])[0],
         fields: (ing) => html`<label style="grid-column:1/-1"><span class="label small muted">${t(`stock.qtyLabel.${type}`)}</span>
           <div class="input-group"><input class="input" name="qty" type="number" inputmode="decimal" step="any" ${type === 'adjustment' ? '' : raw('min="0"')} placeholder="0">
           <span class="addon" data-unit>${ing ? unitLabel(ing.unit) : t('stock.unit')}</span></div>
           ${type === 'count' ? html`<span class="hint small muted" data-onhand>${ing ? t('stock.systemSays', { qty: qty(ing.onHand, unitLabel(ing.unit)) }) : ''}</span>` : ''}</label>`,
       });
+      (opts.initialIds || []).slice(1).forEach((id) => editor.add(id));
       host.addEventListener('ingredient', (e) => {
         const h = e.target.querySelector('[data-onhand]');
         if (h) h.textContent = e.detail ? t('stock.systemSays', { qty: qty(e.detail.onHand, unitLabel(e.detail.unit)) }) : '';
@@ -487,12 +542,14 @@ function movementSheet(ctx, type, ingredientId) {
       }));
       el.querySelector('#add-line').addEventListener('click', () => editor.add().querySelector('select').focus());
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
-        const r = await call('movements.add', { date: form.date.value, type, reason: form.reason.value, lines: editor.values() });
+        const lines = editor.values().filter((l) => type !== 'count' || String(l.qty ?? '').trim() !== '');
+        const r = await call('movements.add', { date: form.date.value, type, reason: form.reason.value, lines });
+        pushRecent('ingredients', lines.map((l) => l.ingredientId));
         close();
         if (type === 'count' && !r.count) toast(t('stock.countMatches'));
         else toast(t(`stock.saved.${type}`) + (r.value ? ' · ' + money(Math.abs(r.value)) : ''));
         await ctx.refresh();
-        redraw(ctx);
+        if (opts.onSaved) opts.onSaved(); else redraw(ctx);
       }, form));
     },
   });
