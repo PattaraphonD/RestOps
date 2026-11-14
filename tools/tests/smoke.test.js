@@ -4,7 +4,7 @@ const { makeApi, test, assert } = require('../test_core.js');
 
 test('bootstrap returns version 1.3.0', () => {
   const { as } = makeApi();
-  assert.equal(as('bootstrap').version, '1.4.0');
+  assert.equal(as('bootstrap').version, '1.6.0');
 });
 
 test('purchase of 2 kg gives onHand 2', () => {

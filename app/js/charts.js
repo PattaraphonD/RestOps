@@ -207,3 +207,34 @@ export function quadrantChart(container, items, { avgCm, threshold, labels }) {
     g.addEventListener('keydown', (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pick(g); } });
   });
 }
+
+/**
+ * Promotion results: daily margin of the promoted dishes. Promotion days are drawn in the brand colour,
+ * the 4 weeks before in grey, and the baseline per-day average as a dashed line.
+ */
+export function promoChart(container, days, { baseline, label }) {
+  container.classList.add('chart');
+  const W = Math.max(300, container.clientWidth || 340), H = 180, L = 40, R = 8, T = 10, B = 22;
+  const vals = days.map((d) => d.cm);
+  const max = Math.max(1, baseline, ...vals) * 1.1, min = Math.min(0, ...vals) * 1.1;
+  const y = (v) => T + (max - v) / (max - min || 1) * (H - T - B);
+  const bw = (W - L - R) / Math.max(1, days.length);
+  let bars = '';
+  days.forEach((d, i) => {
+    const x = L + i * bw + bw * 0.15, w = Math.max(1, bw * 0.7);
+    const y0 = y(0), y1 = y(d.cm);
+    bars += `<rect x="${x.toFixed(1)}" y="${Math.min(y0, y1).toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(0.5, Math.abs(y1 - y0)).toFixed(1)}"
+      rx="2" fill="${d.inPromo ? 'var(--series-1)' : 'var(--line-strong)'}"><title>${esc(fmtDate(d.date))}: ${esc(money(d.cm, { cents: false }))}</title></rect>`;
+  });
+  const first = days.findIndex((d) => d.inPromo);
+  const yb = y(baseline);
+  container.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" role="img" aria-label="${esc(label)}">
+    <line x1="${L}" x2="${W - R}" y1="${y(0)}" y2="${y(0)}" stroke="var(--line)"/>
+    ${bars}
+    <line x1="${L}" x2="${W - R}" y1="${yb}" y2="${yb}" stroke="var(--ink-2)" stroke-dasharray="5 4"/>
+    <text class="val" x="${L - 4}" y="${yb + 4}" text-anchor="end">${esc(compact(baseline))}</text>
+    ${first >= 0 ? `<line x1="${L + first * bw}" x2="${L + first * bw}" y1="${T}" y2="${H - B}" stroke="var(--series-1)" stroke-dasharray="2 3"/>` : ''}
+    <text class="val" x="${L}" y="${H - 6}">${esc(fmtDate(days[0] ? days[0].date : ''))}</text>
+    <text class="val" x="${W - R}" y="${H - 6}" text-anchor="end">${esc(fmtDate(days.length ? days[days.length - 1].date : ''))}</text>
+  </svg>`;
+}

@@ -2,6 +2,7 @@
 import { call } from '../api.js';
 import { html, raw, mount, icon, money, number, $$, openSheet, toast, busy, emptyState } from '../ui.js';
 import { t, defaults } from '../i18n.js';
+import { offerCheck } from './promo-builder.js';
 
 const TYPES = ['dineIn', 'takeaway', 'delivery', 'other'];
 const TYPE_ICON = { dineIn: 'fork', takeaway: 'box', delivery: 'truck', other: 'grid' };
@@ -79,10 +80,13 @@ export function channelSheet(ctx, item) {
       <label class="check"><input type="checkbox" name="commissionOnDiscounted" ${item.commissionOnDiscounted ? raw('checked') : ''}> ${t('channels.onDiscounted')}</label>
       <p class="small muted" style="margin:-4px 2px 12px">${t('channels.onDiscountedHelp')}</p>
       ${isNew ? '' : html`<label class="check"><input type="checkbox" name="active" ${item.active ? raw('checked') : ''}> ${t('channels.active')}</label>`}
+      ${!isNew && item.type === 'delivery' && item.active ? html`<button type="button" class="btn block" id="offer" style="margin-top:8px">${icon('truck')}${t('offer.short')}</button>` : ''}
     </form>`,
     foot: html`<button class="btn primary block" id="save">${isNew ? t('channels.add') : t('common.saveChanges')}</button>`,
     onMount(el, close) {
       const form = el.querySelector('#f');
+      const offer = el.querySelector('#offer');
+      if (offer) offer.addEventListener('click', () => { close(); offerCheck(ctx, item.id); });
       let type = item.type;
       const setType = (ty) => {
         type = ty;

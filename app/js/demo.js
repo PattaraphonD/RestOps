@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v3';
+const KEY = 'ro.demo.db.v5';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -154,6 +154,10 @@ const PREPS = [
 ];
 
 // [key, English name, Thai name, category, price, base daily qty, recipe [[ingredientKey, net qty, unit]]]
+// Major allergens per ingredient (codes from RestoCosting.ALLERGENS). Dishes and preps derive theirs.
+const ALLERGENS = { shrimp: ['crustaceans'], egg: ['eggs'], fishsauce: ['fish'], oyster: ['molluscs', 'soy', 'gluten'],
+  milk: ['milk'], paste: ['crustaceans'] };
+
 const MENU = [
   ['kraprao', 'Holy Basil Chicken & Rice', 'กะเพราไก่ราดข้าว', 'noodles', 89, 22, [['chicken', 150, 'g'], ['rice', 120, 'g'],
     ['basil', 20, 'g'], ['chili', 10, 'g'], ['garlic', 10, 'g'], ['oil', 20, 'ml'], ['fishsauce', 15, 'ml'], ['oyster', 10, 'ml'], ['egg', 1, 'pcs']]],
@@ -267,7 +271,7 @@ function seed(api, db, lang) {
     const parLevel = !use ? '' : isCount(unit) ? Math.ceil(use * 6 / 12) * 12 : Math.ceil(use * 6 * 2) / 2;
     ing[key] = as('ingredients.save', {
       item: { name: tx(en, th), category: icats[ICAT[cat]], unit: units[UNIT[unit]], costPerUnit: cost,
-        minLevel, parLevel, supplierId: s ? sup[s] : '', yieldPct: y || '' },
+        minLevel, parLevel, supplierId: s ? sup[s] : '', yieldPct: y || '', allergens: ALLERGENS[key] || [] },
       units: (CONVERSIONS[key] || []).map((c) => ({ unit: unitName(c.unit), factor: c.factor })),
     }).id;
     unitOf[key] = unit;
@@ -367,6 +371,67 @@ function seed(api, db, lang) {
   as('purchases.add', { date: start, lines: Object.values(restockLines(allKeys, 12)).flat(), invoiceRef: tx('Opening stock', 'สต็อกยกมา') });
   const wasteReasons = ['stock.reasonSpoiled', 'stock.reasonExpired', 'stock.reasonDropped', 'stock.reasonOverprep'].map((k) => t(k));
 
+  // SOPs for the dishes and preps the kitchen makes most, each with its food-safety step.
+  const SOPS = [
+    ['kraprao', { portionNote: tx('Rice in a mound, chicken beside it, fried egg on top', 'ข้าวตักเป็นโดม วางกะเพราข้าง ๆ ไข่ดาววางด้านบน'), holdingNote: tx('Serve within 3 minutes', 'เสิร์ฟภายใน 3 นาที'), equipment: tx('Wok, ladle', 'กระทะเหล็ก ตะหลิว'), prepMinutes: 3 }, [
+      [tx('Pound garlic and chili together', 'โขลกกระเทียมกับพริกให้แหลก'), 1],
+      [tx('Stir-fry the paste in hot oil for 20 seconds', 'ผัดพริกกระเทียมในน้ำมันร้อน 20 วินาที'), 1],
+      [tx('Add chicken; cook until 75 °C in the thickest piece', 'ใส่ไก่ ผัดจนชิ้นที่หนาที่สุดถึง 75 °C'), 3, true],
+      [tx('Season with oyster sauce and fish sauce, fold in the basil off the heat', 'ปรุงด้วยซอสหอยนางรมและน้ำปลา ปิดไฟแล้วใส่ใบกะเพรา'), 1],
+      [tx('Fry the egg separately until the edges are crisp', 'ทอดไข่ดาวแยกจนขอบกรอบ'), 2]]],
+    ['padthai', { portionNote: tx('Lime wedge and bean sprouts on the side', 'วางมะนาวและถั่วงอกข้างจาน'), equipment: tx('Wok', 'กระทะเหล็ก'), prepMinutes: 20 }, [
+      [tx('Soak the noodles in room-temperature water for 20 minutes', 'แช่เส้นในน้ำอุณหภูมิห้อง 20 นาที'), 20],
+      [tx('Cook the shrimp until opaque all the way through (63 °C)', 'ผัดกุ้งจนสุกทั่วทั้งตัว (63 °C)'), 2, true],
+      [tx('Add noodles, sugar, fish sauce and chilli oil; toss until glossy', 'ใส่เส้น น้ำตาล น้ำปลา และน้ำมันพริก ผัดจนเงา'), 3],
+      [tx('Push to one side, scramble the egg, then fold together', 'ดันเส้นไว้ด้านหนึ่ง ตอกไข่ยีให้สุกแล้วคลุกรวม'), 1]]],
+    ['curry', { holdingNote: tx('Keep the curry above 63 °C on the line', 'เก็บแกงไว้ร้อนกว่า 63 °C ตลอดเวลาที่ไลน์'), equipment: tx('Pot, ladle', 'หม้อ กระบวย') }, [
+      [tx('Fry the curry paste in a little coconut milk until fragrant', 'ผัดพริกแกงกับหัวกะทิจนหอม'), 3],
+      [tx('Add chicken and the rest of the coconut milk; simmer until 75 °C inside', 'ใส่ไก่และกะทิที่เหลือ เคี่ยวจนไก่ด้านในถึง 75 °C'), 8, true],
+      [tx('Season with fish sauce and palm sugar; finish with basil', 'ปรุงด้วยน้ำปลาและน้ำตาลปี๊บ ใส่ใบโหระพาก่อนปิดไฟ'), 1]]],
+    ['mango', { portionNote: tx('Half a mango, sliced, next to the rice; cream spooned over the rice', 'มะม่วงครึ่งลูกหั่นชิ้นวางข้างข้าวเหนียว ราดกะทิบนข้าว') }, [
+      [tx('Steam the soaked sticky rice for 25 minutes', 'นึ่งข้าวเหนียวที่แช่ไว้ 25 นาที'), 25],
+      [tx('Mix the hot rice with half the sweet coconut cream; rest 10 minutes', 'คลุกข้าวร้อนกับหัวกะทิหวานครึ่งหนึ่ง พักไว้ 10 นาที'), 10],
+      [tx('Peel and slice the mango just before serving', 'ปอกและหั่นมะม่วงก่อนเสิร์ฟ'), 2]]],
+    ['stock', { holdingNote: tx('Label with the date; use within 4 days', 'ติดป้ายวันที่ ใช้ภายใน 4 วัน'), equipment: tx('Stock pot, ice bath', 'หม้อซุป อ่างน้ำแข็ง') }, [
+      [tx('Cover the bones with cold water and bring to a simmer', 'ใส่กระดูกในน้ำเย็นให้ท่วม แล้วตั้งไฟจนเดือดเบา ๆ'), 20],
+      [tx('Skim, add garlic, simmer gently for 2 hours', 'ช้อนฟองออก ใส่กระเทียม เคี่ยวไฟอ่อน 2 ชั่วโมง'), 120],
+      [tx('Strain; keep the fat that sets on top as chicken fat', 'กรองน้ำซุป เก็บไขมันที่ลอยด้านบนไว้เป็นน้ำมันไก่'), 5],
+      [tx('Cool in an ice bath to below 5 °C within 2 hours, then refrigerate', 'ทำให้เย็นในอ่างน้ำแข็งจนต่ำกว่า 5 °C ภายใน 2 ชั่วโมง แล้วเข้าตู้เย็น'), 30, true]]],
+    ['chillioil', { holdingNote: tx('Store in a sealed jar, away from heat', 'เก็บในขวดปิดสนิท ห่างจากความร้อน'), equipment: tx('Pot, thermometer', 'หม้อ เทอร์โมมิเตอร์') }, [
+      [tx('Heat the oil to 160 °C', 'ตั้งน้ำมันให้ร้อน 160 °C'), 5, true],
+      [tx('Add chili and garlic; fry until garlic is golden, about 4 minutes', 'ใส่พริกและกระเทียม ทอดจนกระเทียมเหลือง ประมาณ 4 นาที'), 4],
+      [tx('Stir in sugar off the heat and cool before jarring', 'ปิดไฟ ใส่น้ำตาลคนให้ละลาย พักให้เย็นก่อนบรรจุขวด'), 15]]],
+  ];
+  const sopOwners = { ...dish, stock: ing.stock, chillioil: ing.chillioil };
+  const boot0 = as('bootstrap', {});
+  SOPS.forEach(([key, notes, steps]) => {
+    const id = sopOwners[key];
+    const row = boot0.menu.find((m) => m.id === id) || boot0.ingredients.find((i) => i.id === id);
+    if (!row) return;
+    as('sop.save', { ownerId: id, version: row.version, notes,
+      steps: steps.map(([text, minutes, critical]) => ({ text, minutes, critical: !!critical })) });
+  });
+
+  // Three promotions with a story: one that paid off, one that lost money, one running now.
+  const promo = {};
+  promo.mango = as('promotions.save', { item: { name: tx('Weekday mango 15% off', 'ข้าวเหนียวมะม่วงวันธรรมดาลด 15%'), type: 'percentOff', value: 15,
+    channelIds: [chan.dine], startDate: D(today, -40), endDate: D(today, -26), weekdays: [1, 2, 3, 4], platformFundedPct: 0 },
+    items: [{ menuItemId: dish.mango }] });
+  promo.grab = as('promotions.save', { item: { name: tx('Grab Pad Thai 40% off', 'ผัดไทยบน Grab ลด 40%'), type: 'percentOff', value: 40,
+    channelIds: [chan.grab], startDate: D(today, -24), endDate: D(today, -15), weekdays: [], platformFundedPct: 0, campaignCommissionPct: 35,
+    note: tx('Grab campaign: we paid the whole discount', 'แคมเปญ Grab ร้านออกส่วนลดเอง') }, items: [{ menuItemId: dish.padthai }] });
+  promo.set = as('promotions.save', { item: { name: tx('Curry + Thai tea set', 'ชุดแกงเขียวหวาน + ชาไทย'), type: 'bundle', value: 179,
+    channelIds: [chan.lineman], startDate: D(today, -6), endDate: '', weekdays: [], platformFundedPct: 0 },
+    items: [{ menuItemId: dish.curry, qty: 1 }, { menuItemId: dish.tea, qty: 1 }] });
+  const inRange = (d, p) => d >= p.startDate && (!p.endDate || d <= p.endDate) && (!p.weekdays.length || p.weekdays.includes(new Date(d + 'T00:00:00Z').getUTCDay()));
+  // Swap a channel's normal line for a promo line (with the extra orders the promotion brought in).
+  const toPromo = (lines, dishId, promoId, lift) => {
+    const i = lines.findIndex((l) => l.menuItemId === dishId);
+    const q = i >= 0 ? lines[i].qty : 1;
+    if (i >= 0) lines.splice(i, 1);
+    lines.push({ menuItemId: dishId, promoId, qty: Math.max(1, Math.round(q * lift)) });
+  };
+
   for (let d = start; d <= today; d = D(d, 1)) {
     const dow = new Date(d + 'T00:00:00Z').getUTCDay();
     const isToday = d === today;
@@ -393,6 +458,9 @@ function seed(api, db, lang) {
         if (q) byCh[c].push({ menuItemId: dish[key], qty: q });
       });
     });
+    if (inRange(d, promo.mango)) toPromo(byCh.dine, dish.mango, promo.mango.id, 1.4 + r() * 0.2);
+    if (inRange(d, promo.grab)) toPromo(byCh.grab, dish.padthai, promo.grab.id, 1.9 + r() * 0.3);
+    if (inRange(d, promo.set)) byCh.lineman.push({ promoId: promo.set.id, qty: Math.max(1, Math.round((2 + r() * 3) * (isToday ? 0.45 : 1))) });
     SPLIT.forEach(([c]) => { if (byCh[c].length) as('sales.add', { date: d, channelId: chan[c], lines: byCh[c] }); });
 
     // Waste a few times a week.

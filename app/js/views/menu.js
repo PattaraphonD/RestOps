@@ -10,6 +10,8 @@ import { recipeLines } from './recipe-lines.js';
 import { ingredientSheet, itemSheet } from './stock.js';
 import { renderPricing, channelPriceEditor, selectChannel } from './pricing-view.js';
 import { renderAnalysis } from './analysis.js';
+import { renderPromotions } from './promotions.js';
+import { sopSheet } from './sop.js';
 
 const ui = { tab: 'dishes', search: '', sort: 'name' };
 const VARIANCE_FLAG = 10;
@@ -21,13 +23,13 @@ export async function render(ctx) {
   const sctx = { ...ctx, redraw: () => render(ctx) };
   // Deep link from the dashboard: #/menu/pricing/<channelId>
   const [tab, arg] = ctx.params || [];
-  if (['dishes', 'preps', 'pricing', 'analysis'].includes(tab)) {
+  if (['dishes', 'preps', 'pricing', 'analysis', 'promotions'].includes(tab)) {
     ui.tab = tab;
     if (tab === 'pricing' && arg) selectChannel(arg);
     history.replaceState(null, '', '#/menu');
     ctx.params = [];
   }
-  if (!can('manager') && (ui.tab === 'pricing' || ui.tab === 'analysis')) ui.tab = 'dishes';
+  if (!can('manager') && ['pricing', 'analysis', 'promotions'].includes(ui.tab)) ui.tab = 'dishes';
   if (can('manager')) {
     const label = ui.tab === 'preps' ? t('menu.newPrep') : t('menu.newDish');
     setActions(html`<button class="icon-btn" id="new-item" aria-label="${label}">${icon('plus')}</button>`)
@@ -35,11 +37,12 @@ export async function render(ctx) {
   } else setActions('');
 
   mount(el, html`
-    <div class="seg" role="group" aria-label="${t('menu.tabs')}" style="margin-top:4px">
+    <div class="seg${can('manager') ? ' scroll' : ''}" role="group" aria-label="${t('menu.tabs')}" style="margin-top:4px">
       <button aria-pressed="${ui.tab === 'dishes'}" data-tab="dishes">${t('menu.tabDishes')}</button>
       <button aria-pressed="${ui.tab === 'preps'}" data-tab="preps">${t('menu.tabPreps')}</button>
       ${can('manager') ? html`<button aria-pressed="${ui.tab === 'pricing'}" data-tab="pricing">${t('menu.tabPricing')}</button>
-        <button aria-pressed="${ui.tab === 'analysis'}" data-tab="analysis">${t('menu.tabAnalysis')}</button>` : ''}
+        <button aria-pressed="${ui.tab === 'analysis'}" data-tab="analysis">${t('menu.tabAnalysis')}</button>
+        <button aria-pressed="${ui.tab === 'promotions'}" data-tab="promotions">${t('menu.tabPromotions')}</button>` : ''}
     </div>
     <div id="menu-tab"></div>`);
   $$('[data-tab]', el).forEach((b) => b.addEventListener('click', () => {
@@ -51,6 +54,7 @@ export async function render(ctx) {
   if (ui.tab === 'preps') renderPreps(sctx, host);
   else if (ui.tab === 'pricing') renderPricing(ctx, host, { openDish: (m) => dishSheet(ctx, m) });
   else if (ui.tab === 'analysis') renderAnalysis(ctx, host, { openDish: (m) => dishSheet(ctx, m) });
+  else if (ui.tab === 'promotions') renderPromotions(ctx, host);
   else renderDishes(ctx, host);
 }
 
@@ -102,7 +106,7 @@ function renderDishes(ctx, host) {
       : emptyState('chef', t('menu.noneTitle'), can('manager') ? t('menu.noneText') : t('menu.noneStaff')));
     $$('#dishes [data-id]').forEach((b) => b.addEventListener('click', () => {
       const m = boot.menu.find((x) => x.id === b.dataset.id);
-      if (can('manager')) dishSheet(ctx, m); else viewSheet(m, target);
+      if (can('manager')) dishSheet(ctx, m); else viewSheet(ctx, m, target);
     }));
   };
   host.querySelector('.search input').addEventListener('input', (e) => { ui.search = e.target.value; draw(); });
@@ -126,9 +130,11 @@ function breakdownHtml(lines) {
   </li>`);
 }
 
-function viewSheet(m, target) {
+function viewSheet(ctx, m, target) {
   openSheet({
     title: m.name,
+    foot: html`<button class="btn primary block" data-sop>${icon('clipboard')}${t('sop.open')}</button>`,
+    onMount(el, close) { el.querySelector('[data-sop]').addEventListener('click', () => { close(); sopSheet(ctx, m.id); }); },
     body: html`<div class="card summary-strip" style="margin-bottom:14px">
         <div><div class="val">${money(m.price)}</div><div class="label">${t('menu.price')}</div></div>
         <div><div class="val">${money(m.foodCost)}</div><div class="label">${t('home.foodCost')}</div></div>
@@ -177,9 +183,12 @@ function dishSheet(ctx, item) {
       ${chPrices.html}
       ${isNew ? '' : html`<label class="check" style="margin-top:12px"><input type="checkbox" name="active" ${item.active ? raw('checked') : ''}> ${t('menu.onMenu')}</label>`}
     </form>`,
-    foot: html`<button class="btn primary block" id="save">${isNew ? t('menu.addDish') : t('menu.saveDish')}</button>`,
+    foot: html`${isNew ? '' : html`<button class="btn" id="open-sop">${icon('clipboard')}${t('sop.short')}</button>`}
+      <button class="btn primary block" id="save">${isNew ? t('menu.addDish') : t('menu.saveDish')}</button>`,
     onMount(el, close) {
       const form = el.querySelector('#f');
+      const openSop = el.querySelector('#open-sop');
+      if (openSop) openSop.addEventListener('click', () => { close(); sopSheet(ctx, item.id); });
       let totals = { cost: 0, lines: [], problem: '' };
       const summary = () => {
         const total = totals.cost;

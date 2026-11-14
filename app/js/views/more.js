@@ -8,6 +8,7 @@ import { list, signOut, langSwitch, wireLangSwitch } from '../app.js';
 import { t, getLang, defaults } from '../i18n.js';
 import { renderLog as production } from './production.js';
 import { renderChannels as channels } from './channels.js';
+import { renderManual as sop } from './sop.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -15,7 +16,7 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team, settings, account, production, channels };
+  const pages = { expenses, suppliers, team, settings, account, production, channels, sop };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -46,6 +47,7 @@ function index({ el, setTitle, state, can }) {
       <div class="card"><ul class="list">
         ${item('#/menu', 'chef', t('menu.title'), t('more.menuSub', { n: state.boot.menu.filter((m) => m.active).length }))}
         ${item('#/more/production', 'clipboard', t('production.logTitle'), t('more.productionSub'))}
+        ${item('#/more/sop', 'chef', t('sop.manual'), t('sop.manualSub'))}
       </ul></div></section>
     <section class="section"><div class="section-head"><h2>${t('account.language')}</h2></div>${langSwitch()}</section>
     <section class="section"><div class="card"><ul class="list">

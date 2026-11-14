@@ -6,6 +6,7 @@ import {
 } from '../ui.js';
 import { list } from '../app.js';
 import { t } from '../i18n.js';
+import { sopSheet } from './sop.js';
 import { recipeLines } from './recipe-lines.js';
 import { produceSheet } from './production.js';
 import { sparkline } from '../charts.js';
@@ -265,11 +266,14 @@ export async function itemSheet(ctx, id) {
       <div class="card" id="item-history"><div class="skeleton" style="height:120px"></div></div>`,
     foot: isPrep || ctx.can('manager') ? html`
       ${ctx.can('manager') ? html`<button class="btn" data-edit>${icon('edit')}${isPrep ? t('stock.editShort') : t('stock.editIngredient')}</button>` : ''}
+      ${isPrep ? html`<button class="btn" data-open-sop>${icon('clipboard')}${t('sop.short')}</button>` : ''}
       ${isPrep ? html`<button class="btn primary" data-act="produce">${icon('chef')}${t('stock.produceShort')}</button>` : ''}` : null,
     onMount(el, close) {
       $$('[data-act]', el).forEach((b) => b.addEventListener('click', () => { close(); openEntry(ctx, b.dataset.act, i.id); }));
       const ed = el.querySelector('[data-edit]');
       if (ed) ed.addEventListener('click', () => { close(); ingredientSheet(ctx, i); });
+      const so = el.querySelector('[data-open-sop]');
+      if (so) so.addEventListener('click', () => { close(); sopSheet(ctx, i.id); });
     },
   });
   if (showHistory) loadCostHistory(sheet.el.querySelector('#cost-history'), i);
@@ -595,6 +599,11 @@ export function ingredientSheet(ctx, item, preset = {}) {
         <div class="small" id="y-result" style="margin-top:8px;min-height:20px" aria-live="polite"></div>
       </div>
 
+      <div class="field"><span class="label" id="al-l">${t('sop.allergens')}</span>
+        <div class="chips" role="group" aria-labelledby="al-l" style="flex-wrap:wrap">${window.RestoCosting.ALLERGENS.map((a) =>
+          html`<button type="button" class="chip" data-allergen="${a}" aria-pressed="${(item.allergens || []).includes(a)}">${t(`allergen.${a}`)}</button>`)}</div>
+        <span class="hint">${t('sop.allergenPick')}${item.kind === 'prep' && (item.allergensAll || []).length
+          ? ' ' + t('sop.allergenFromRecipe', { list: item.allergensAll.map((a) => t(`allergen.${a}`)).join(', ') }) : ''}</span></div>
       <div class="section-head" style="margin-top:10px"><h2 style="font-size:15px">${t('stock.otherUnits')}</h2></div>
       <p class="small muted" style="margin:-4px 2px 10px">${t('stock.otherUnitsHelp')}</p>
       <div id="convs">${(item.conversions || []).map((c) => convHtml(c))}</div>
@@ -604,6 +613,7 @@ export function ingredientSheet(ctx, item, preset = {}) {
     </form>`,
     foot: html`<button class="btn primary block" id="save">${isNew ? (kind === 'prep' ? t('stock.addPrep') : t('stock.addIngredient')) : t('common.saveChanges')}</button>`,
     onMount(el, close) {
+      $$('[data-allergen]', el).forEach((b) => b.addEventListener('click', () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'))));
       const form = el.querySelector('#f');
       const stockUnit = () => unitLabel(form.unit.value);
       let totals = { cost: 0, lines: [], problem: '' };
@@ -711,6 +721,7 @@ export function ingredientSheet(ctx, item, preset = {}) {
             yieldPct: f.yieldPct.value.trim(), kind,
             batchQty: isPrep ? f.batchQty.value : '', trackStock: isPrep ? f.trackStock.checked : true,
             shelfLifeDays: isPrep ? f.shelfLifeDays.value : (item.shelfLifeDays ?? ''),
+            allergens: $$('[data-allergen]', el).filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.dataset.allergen),
           },
           units: convs,
           prepRecipe: isPrep ? editor.values() : [],

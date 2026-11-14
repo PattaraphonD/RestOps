@@ -215,7 +215,41 @@ var RestoCosting = (function () {
     };
   }
 
+  /* ------------------------------------------------------------ SOP helpers */
+
+  // The 14 major allergens (EU list), in display order.
+  var ALLERGENS = ['gluten', 'crustaceans', 'eggs', 'fish', 'peanuts', 'soy', 'milk', 'nuts', 'celery', 'mustard',
+    'sesame', 'sulphites', 'lupin', 'molluscs'];
+
+  /** Allergens in a list of recipe lines, following preps (each ingredient visited once, so cycles end). */
+  function allergensFor(lines, book) {
+    var found = {}, seen = {};
+    function walk(id) {
+      if (seen[id]) return;
+      seen[id] = true;
+      var ing = book.byId[id];
+      if (!ing) return;
+      (ing.allergens || []).forEach(function (a) { found[a] = true; });
+      if (ing.kind === 'prep') (ing.prepLines || []).forEach(function (l) { walk(l.ingredientId); });
+    }
+    (lines || []).forEach(function (l) { walk(l.ingredientId); });
+    return ALLERGENS.filter(function (a) { return found[a]; });
+  }
+
+  /** A quantity in the unit a cook reads most easily: 1500 g → 1.5 kg, 0.25 kg → 250 g. */
+  function humanQty(qty, unit) {
+    var q = Number(qty) || 0, code = unitCode(unit);
+    if (code === 'g' && q >= 1000) { q = q / 1000; unit = 'kg'; }
+    else if (code === 'ml' && q >= 1000) { q = q / 1000; unit = 'l'; }
+    else if (code === 'kg' && q > 0 && q < 1) { q = q * 1000; unit = 'g'; }
+    else if (code === 'l' && q > 0 && q < 1) { q = q * 1000; unit = 'ml'; }
+    return { qty: Math.round(q * 1000) / 1000, unit: unit };
+  }
+
   return {
+    ALLERGENS: ALLERGENS,
+    allergensFor: allergensFor,
+    humanQty: humanQty,
     UNITS: UNITS,
     unitCode: unitCode,
     sameUnit: sameUnit,

@@ -322,6 +322,10 @@ button.row:active, a.row:active { background: var(--surface-2); }
   flex: 1; min-height: 38px; border: 0; border-radius: 9px; background: transparent; font-weight: 650; font-size: 14px; cursor: pointer; color: var(--ink-2);
 }
 .seg button[aria-pressed="true"] { background: var(--surface); color: var(--ink); box-shadow: var(--shadow); }
+/* Many segments on a phone: scroll sideways instead of squeezing the labels. */
+.seg.scroll { overflow-x: auto; scrollbar-width: none; }
+.seg.scroll::-webkit-scrollbar { display: none; }
+.seg.scroll button { flex: 1 0 auto; padding: 0 12px; white-space: nowrap; }
 
 .stepper { display: inline-flex; align-items: center; border: 1px solid var(--line-strong); border-radius: 12px; overflow: hidden; background: var(--surface); }
 .stepper button { width: 42px; height: 42px; border: 0; background: transparent; display: grid; place-items: center; cursor: pointer; color: var(--ink-2); }
@@ -544,3 +548,20 @@ details.server summary { cursor: pointer; color: var(--ink-2); font-weight: 600;
 .change-up { color: var(--bad-ink); font-weight: 650; }
 .change-down { color: var(--good-ink); font-weight: 650; }
 .sparkline { display: block; width: 100%; height: auto; }
+
+/* SOP manuals */
+.sop-steps { margin: 0; padding-left: 26px; }
+.sop-step { padding: 10px 12px; margin: 0 0 8px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; }
+.sop-step.critical { border-left: 4px solid var(--bad); }
+#print-root { display: none; }
+@media print {
+  body.printing > *:not(#print-root) { display: none !important; }
+  body.printing #print-root { display: block; }
+  body.printing, html:has(body.printing) { overflow: visible !important; height: auto !important; }
+  .sop-print { break-after: page; color: #000; background: #fff; font-size: 12pt; padding: 8mm 4mm; }
+  .sop-print:last-child { break-after: auto; }
+  .sop-print .card, .sop-print .sop-step { border: 1px solid #999; box-shadow: none; background: #fff; }
+  .sop-print .pill { background: none; border: 1px solid #000; color: #000; }
+  .sop-print .muted, .sop-print .small { color: #333; }
+  .sop-print .no-print, .sop-print svg { display: none; }
+}

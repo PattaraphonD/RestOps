@@ -7,6 +7,7 @@
  *  - roundPrice / effectiveRounding: turn a target-meeting price into a menu price (never rounds down)
  *  - channelEconomics: what a dish earns on one sales channel after commission and packaging
  *  - menuEngineering: Kasavana–Smith classification (star / plowhorse / puzzle / dog)
+ *  - promoEconomics / counterOffer: is a promotion still worth it, and how far can a discount go
  */
 var RestoPricing = (function () {
   'use strict';
@@ -95,12 +96,152 @@ var RestoPricing = (function () {
     };
   }
 
+  /* ------------------------------------------------------------ promotions */
+
+  var PROMO_TYPES = ['percentOff', 'amountOff', 'fixedPrice', 'bundle', 'buyXGetY'];
+
+  /** "2+1" → { x: 2, y: 1 }; anything else → null. */
+  function parseBxgy(v) {
+    var m = /^(\d+)\s*\+\s*(\d+)$/.exec(String(v === null || v === undefined ? '' : v).trim());
+    if (!m) return null;
+    var x = Number(m[1]), y = Number(m[2]);
+    return x >= 1 && y >= 1 ? { x: x, y: y } : null;
+  }
+
+  /** What the customer pays for one dish under a per-dish promotion (never below 0). */
+  function promoPrice(type, value, listPrice) {
+    var list = num(listPrice), v = num(value), out = list;
+    if (type === 'percentOff') out = list * (1 - v / 100);
+    else if (type === 'amountOff') out = list - v;
+    else if (type === 'fixedPrice') out = v;
+    else if (type === 'buyXGetY') { var b = parseBxgy(value); out = b ? list * b.x / (b.x + b.y) : list; }
+    return round(Math.max(0, out), 2);
+  }
+
+  /** Per-unit bundle price of each component: by list share, or equal per unit when nothing has a list price. */
+  function bundleSplit(items, bundlePrice) {
+    var total = 0, units = 0;
+    (items || []).forEach(function (i) { total += num(i.listPrice) * num(i.qty || 1); units += num(i.qty || 1); });
+    return (items || []).map(function (i) {
+      var u = total > 0 ? num(bundlePrice) * num(i.listPrice) / total : (units > 0 ? num(bundlePrice) / units : 0);
+      return { id: i.id, unitPrice: round(u, 4) };
+    });
+  }
+
+  /** One unit (a dish, or a whole bundle) before and during a promotion. */
+  function promoRow(o) {
+    var list = num(o.listPrice), promo = Math.max(0, num(o.promoPrice)), food = num(o.foodCost), pack = num(o.packaging);
+    var ch = o.channel || {};
+    var cut = Math.max(0, list - promo);
+    var platform = cut * Math.min(100, Math.max(0, num(o.platformFundedPct))) / 100;
+    var disc = cut - platform;
+    // What the restaurant is credited = what the customer pays + the app's share of the discount.
+    // (Equals list − our share of the discount; also right when a set costs more than its dishes' list prices.)
+    var credited = promo + platform;
+    var campaign = o.campaignCommissionPct;
+    var rate = campaign === null || campaign === undefined || campaign === '' ? num(ch.commissionPct) : num(campaign);
+    var base = ch.commissionOnDiscounted === false ? list : promo;
+    var commission = rate / 100 * base;
+    var cmBefore = list * (1 - num(ch.commissionPct) / 100) - food - pack;
+    var net = credited - commission;
+    var cmDuring = net - food - pack;
+    var costPct = net > 0 ? (food + pack) / net * 100 : null;
+    var target = num(o.targetPct);
+    return {
+      id: o.id, name: o.name, listPrice: round(list), promoPrice: round(promo), discount: round(disc), platformDiscount: round(platform),
+      credited: round(credited), commission: round(commission), foodCost: round(food), packaging: round(pack),
+      cmBefore: round(cmBefore), cmDuring: round(cmDuring),
+      costPctDuring: costPct === null ? null : round(costPct, 1),
+      foodCostPctDuring: net > 0 ? round(food / net * 100, 1) : null,
+      uplift: cmDuring > 0 && cmBefore > 0 ? round(cmBefore / cmDuring - 1, 4) : null,
+      verdict: cmDuring < -EPS ? 'loss' : (costPct !== null && costPct <= target + 5 + EPS ? 'profitable' : 'thin')
+    };
+  }
+
+  /**
+   * Profit of a promotion on one channel. Per-dish types give one row per dish; a bundle gives one row.
+   * overall = the rows summed (verdict and uplift recomputed); worst = up to 3 weakest non-profitable rows.
+   */
+  function promoEconomics(o) {
+    var ch = o.channel || {}, items = o.items || [];
+    var common = { channel: ch, platformFundedPct: o.platformFundedPct, campaignCommissionPct: o.campaignCommissionPct, targetPct: o.targetPct };
+    var rows;
+    if (o.type === 'bundle') {
+      var list = 0, food = 0, qty = 0;
+      items.forEach(function (i) { var q = num(i.qty || 1); list += num(i.listPrice) * q; food += num(i.foodCost) * q; qty += q; });
+      rows = [promoRow(merge(common, { id: 'bundle', name: items.map(function (i) { return i.name; }).join(' + '),
+        listPrice: list, promoPrice: num(o.value), foodCost: food, packaging: qty * num(ch.packagingCost) }))];
+    } else {
+      rows = items.map(function (i) {
+        return promoRow(merge(common, { id: i.id, name: i.name, listPrice: i.listPrice,
+          promoPrice: promoPrice(o.type, o.value, i.listPrice), foodCost: i.foodCost, packaging: num(ch.packagingCost) }));
+      });
+    }
+    var t = { listPrice: 0, promoPrice: 0, discount: 0, platformDiscount: 0, credited: 0, commission: 0, foodCost: 0, packaging: 0, cmBefore: 0 };
+    rows.forEach(function (r) { for (var k in t) t[k] += r[k]; });
+    var overall = rows.length ? promoRow(merge(common, { id: 'overall', name: '', listPrice: t.listPrice, promoPrice: t.promoPrice,
+      foodCost: t.foodCost, packaging: t.packaging })) : null;
+    if (overall) {
+      // Summing per-row money keeps rounding consistent with what the rows show.
+      ['discount', 'platformDiscount', 'credited', 'commission', 'cmBefore'].forEach(function (k) { overall[k] = round(t[k]); });
+      overall.cmDuring = round(t.credited - t.commission - t.foodCost - t.packaging);
+      var net = t.credited - t.commission;
+      overall.costPctDuring = net > 0 ? round((t.foodCost + t.packaging) / net * 100, 1) : null;
+      overall.foodCostPctDuring = net > 0 ? round(t.foodCost / net * 100, 1) : null;
+      overall.uplift = overall.cmDuring > 0 && overall.cmBefore > 0 ? round(overall.cmBefore / overall.cmDuring - 1, 4) : null;
+      overall.verdict = overall.cmDuring < -EPS ? 'loss'
+        : (overall.costPctDuring !== null && overall.costPctDuring <= num(o.targetPct) + 5 + EPS ? 'profitable' : 'thin');
+    }
+    var worst = rows.filter(function (r) { return r.verdict !== 'profitable'; })
+      .sort(function (a, b) { return a.cmDuring - b.cmDuring; }).slice(0, 3).map(function (r) { return r.id; });
+    return { rows: rows, overall: overall, worst: worst };
+  }
+
+  /**
+   * The largest % off (0–90, in 0.5 steps) a delivery-app campaign can offer:
+   *  onTarget  — every remaining dish stays 'profitable' (dishes already off target at 0 % are left out)
+   *  breakEven — every remaining dish still makes money (dishes already losing money at 0 % are left out)
+   */
+  function counterOffer(o) {
+    var at = function (pct) { return promoEconomics(merge(o, { type: 'percentOff', value: pct })).rows; };
+    var start = at(0);
+    function search(ok) {
+      var keep = {}, excluded = [];
+      start.forEach(function (r) { if (ok(r)) keep[r.id] = true; else excluded.push(r.id); });
+      if (!Object.keys(keep).length) return { maxPct: null, excluded: excluded };
+      var best = 0;
+      for (var p = 0.5; p <= 90 + EPS; p += 0.5) {
+        var pass = at(p).every(function (r) { return !keep[r.id] || ok(r); });
+        if (!pass) break;
+        best = round(p, 1);
+      }
+      return { maxPct: best, excluded: excluded };
+    }
+    return {
+      onTarget: search(function (r) { return r.verdict === 'profitable'; }),
+      breakEven: search(function (r) { return r.cmDuring >= -EPS; })
+    };
+  }
+
+  function merge(a, b) {
+    var out = {}, k;
+    for (k in a) out[k] = a[k];
+    for (k in b) out[k] = b[k];
+    return out;
+  }
+
   return {
     ROUNDING_RULES: ROUNDING_RULES,
     effectiveRounding: effectiveRounding,
     roundPrice: roundPrice,
     channelEconomics: channelEconomics,
-    menuEngineering: menuEngineering
+    menuEngineering: menuEngineering,
+    PROMO_TYPES: PROMO_TYPES,
+    parseBxgy: parseBxgy,
+    promoPrice: promoPrice,
+    bundleSplit: bundleSplit,
+    promoEconomics: promoEconomics,
+    counterOffer: counterOffer
   };
 })();
 

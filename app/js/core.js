@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '1.4.0';
+  var VERSION = '1.6.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -27,12 +27,15 @@ var RestoCore = (function () {
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'leadTimeDays', 'paymentTermsDays'],
     Ingredients: ['id', 'name', 'category', 'unit', 'costPerUnit', 'minLevel', 'supplierId', 'active',
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'parLevel',
-      'yieldPct', 'kind', 'batchQty', 'trackStock', 'shelfLifeDays'],
+      'yieldPct', 'kind', 'batchQty', 'trackStock', 'shelfLifeDays',
+      // SOP fields; allergens = csv of codes (only set on ingredients, derived for dishes and preps)
+      'portionNote', 'holdingNote', 'equipment', 'prepMinutes', 'allergens', 'photoUrl'],
     Purchases: ['id', 'date', 'supplierId', 'ingredientId', 'qty', 'unitCost', 'total', 'invoiceRef',
       'note', 'voided', 'createdAt', 'createdBy', 'poId', 'poLineId'],
     StockMovements: ['id', 'date', 'ingredientId', 'type', 'qty', 'unitCost', 'value', 'reason', 'refId',
       'voided', 'createdAt', 'createdBy'],
-    Menu: ['id', 'name', 'category', 'price', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
+    Menu: ['id', 'name', 'category', 'price', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version',
+      'portionNote', 'holdingNote', 'equipment', 'prepMinutes', 'photoUrl'],
     Recipes: ['id', 'menuItemId', 'ingredientId', 'qty', 'note', 'unit', 'yieldPct'],
     Sales: ['id', 'date', 'menuItemId', 'itemName', 'qty', 'unitPrice', 'total', 'unitCost', 'costTotal',
       'channel', 'note', 'voided', 'createdAt', 'createdBy',
@@ -58,14 +61,20 @@ var RestoCore = (function () {
     Channels: ['id', 'name', 'type', 'commissionPct', 'packagingCost', 'commissionOnDiscounted', 'active', 'sortOrder',
       'createdAt', 'updatedAt', 'updatedBy', 'version'],
     // A dish's price on one channel (no row = the dish's own price).
-    MenuPrices: ['id', 'menuItemId', 'channelId', 'price']
+    MenuPrices: ['id', 'menuItemId', 'channelId', 'price'],
+    // Promotions: status stores draft / scheduled / cancelled; scheduled shows as scheduled / active / ended by date.
+    Promotions: ['id', 'name', 'type', 'value', 'channelIds', 'startDate', 'endDate', 'weekdays', 'platformFundedPct',
+      'campaignCommissionPct', 'status', 'note', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+    PromotionItems: ['id', 'promoId', 'menuItemId', 'qty'],
+    // Standard operating procedure steps for a dish or a prep (ownerId).
+    SopSteps: ['id', 'ownerId', 'stepNo', 'text', 'minutes', 'imageUrl', 'critical']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -261,7 +270,8 @@ var RestoCore = (function () {
     'Purchase order': 'ใบสั่งซื้อ', 'Invoice': 'ใบแจ้งหนี้', 'Order line': 'รายการสั่งซื้อ',
     'Batches': 'จำนวนรอบผลิต', 'Batch quantity': 'ปริมาณต่อรอบผลิต', 'Conversion factor': 'ตัวคูณการแปลงหน่วย',
     'Conversion unit': 'หน่วยที่แปลง', 'Shelf life (days)': 'อายุการเก็บ (วัน)', 'Quantity made': 'จำนวนที่ผลิตได้', 'Production run': 'การผลิต',
-    'Packaging cost': 'ค่าบรรจุภัณฑ์', 'From': 'ตั้งแต่วันที่', 'To': 'ถึงวันที่', 'Sales channel': 'ช่องทางการขาย', 'Commission %': 'ค่าคอมมิชชัน %',
+    'Packaging cost': 'ค่าบรรจุภัณฑ์', 'Promotion': 'โปรโมชัน', 'Promotion name': 'ชื่อโปรโมชัน', 'Promotion price': 'ราคาโปรโมชัน',
+    'Start date': 'วันเริ่ม', 'End date': 'วันสิ้นสุด', 'Prep': 'ของเตรียม', 'Prep time (minutes)': 'เวลาเตรียม (นาที)', 'From': 'ตั้งแต่วันที่', 'To': 'ถึงวันที่', 'Sales channel': 'ช่องทางการขาย', 'Commission %': 'ค่าคอมมิชชัน %',
     'cancelled': 'ถูกยกเลิก', 'closed': 'ปิดแล้ว', 'received': 'รับครบแล้ว', 'draft': 'เป็นฉบับร่าง',
     'sent': 'ส่งแล้ว', 'partial': 'รับบางส่วนแล้ว', 'paid': 'จ่ายแล้ว', 'disputed': 'โต้แย้งอยู่'
   };
@@ -270,11 +280,12 @@ var RestoCore = (function () {
     var m;
     if (TH_LABELS[l]) return TH_LABELS[l];
     if ((m = /^Line (\d+) quantity$/.exec(l))) return 'จำนวนในรายการที่ ' + m[1];
+    if ((m = /^Step (\d+) minutes$/.exec(l))) return 'เวลาของขั้นตอนที่ ' + m[1] + ' (นาที)';
     if ((m = /^Line (\d+) unit cost$/.exec(l))) return 'ราคาต่อหน่วยในรายการที่ ' + m[1];
     if ((m = /^Input (\d+) quantity$/.exec(l))) return 'จำนวนวัตถุดิบที่ใช้รายการที่ ' + m[1];
     if ((m = /^By-product (\d+) quantity$/.exec(l))) return 'จำนวนผลพลอยได้รายการที่ ' + m[1];
     if ((m = /^Recipe line (\d+) quantity$/.exec(l))) return 'ปริมาณในสูตรบรรทัดที่ ' + m[1];
-    if ((m = /^(Ingredient|Supplier|Dish|User|Sales channel) "([\s\S]*)"$/.exec(l))) return TH_LABELS[m[1]] + ' "' + m[2] + '"';
+    if ((m = /^(Ingredient|Supplier|Dish|User|Sales channel|Promotion) "([\s\S]*)"$/.exec(l))) return TH_LABELS[m[1]] + ' "' + m[2] + '"';
     if ((m = /^([\s\S]+) quantity$/.exec(l))) return 'จำนวน ' + m[1];
     if ((m = /^([\s\S]+) price$/.exec(l))) return 'ราคา ' + m[1];
     return l;
@@ -363,6 +374,25 @@ var RestoCore = (function () {
     [/^Unknown channel type\.$/, 'ไม่รู้จักประเภทช่องทางการขาย'],
     [/^Keep at least one active sales channel\.$/, 'ต้องเปิดใช้งานช่องทางการขายอย่างน้อยหนึ่งช่องทาง'],
     [/^Unknown price rounding\.$/, 'ไม่รู้จักรูปแบบการปัดราคา'],
+    [/^Unknown promotion type\.$/, 'ไม่รู้จักประเภทโปรโมชัน'],
+    [/^Discount must be between 0 and 100 %\.$/, 'ส่วนลดต้องมากกว่า 0 และไม่เกิน 100 %'],
+    [/^Amount must be greater than 0\.$/, 'จำนวนเงินต้องมากกว่า 0'],
+    [/^Buy-X-get-Y must look like 2\+1\.$/, 'ซื้อแถมต้องเขียนแบบ 2+1 (ซื้อ 2 แถม 1)'],
+    [/^Choose at least one dish\.$/, 'กรุณาเลือกอย่างน้อยหนึ่งเมนู'],
+    [/^A bundle needs at least two dishes\.$/, 'ชุดเมนูต้องมีอย่างน้อยสองจาน'],
+    [/^End date can't be before the start date\.$/, 'วันสิ้นสุดต้องไม่ก่อนวันเริ่ม'],
+    [/^Platform share must be between 0 and 100 %\.$/, 'ส่วนที่แอปช่วยออกต้องอยู่ระหว่าง 0 ถึง 100 %'],
+    [/^Unknown weekday\.$/, 'ไม่รู้จักวันในสัปดาห์'],
+    [/^([\s\S]+) is in the promotion twice\.$/, function (m) { return m[1] + ' อยู่ในโปรโมชันซ้ำสองครั้ง'; }],
+    [/^This promotion is already cancelled\.$/, 'โปรโมชันนี้ถูกยกเลิกไปแล้ว'],
+    [/^Promotion "([\s\S]*)" isn't running on this date and channel\.$/, function (m) { return 'โปรโมชัน "' + m[1] + '" ไม่ได้ใช้ในวันและช่องทางนี้'; }],
+    [/^Dish isn't in this promotion\.$/, 'เมนูนี้ไม่อยู่ในโปรโมชัน'],
+    [/^Unknown allergen\.$/, 'ไม่รู้จักสารก่อภูมิแพ้นี้'],
+    [/^Step (\d+): write what to do\.$/, 'ขั้นตอนที่ $1: กรุณาเขียนวิธีทำ'],
+    [/^Too many steps \(max (\d+)\)\.$/, 'ขั้นตอนมากเกินไป (ไม่เกิน $1)'],
+    [/^Image link must start with http:\/\/ or https:\/\/\.$/, 'ลิงก์รูปต้องขึ้นต้นด้วย http:// หรือ https://'],
+    [/^Only dishes and preps have an SOP\.$/, 'มีขั้นตอนมาตรฐานได้เฉพาะเมนูและของเตรียม'],
+    [/^Line (\d+): quantity must be a whole number\.$/, 'บรรทัดที่ $1: จำนวนต้องเป็นจำนวนเต็ม'],
     [/^This sales channel is turned off\.$/, 'ช่องทางการขายนี้ปิดใช้งานอยู่'],
     [/^Choose a sales channel\.$/, 'กรุณาเลือกช่องทางการขาย'],
     [/^Too many dishes in one update \(max (\d+)\)\.$/, 'อัปเดตได้ครั้งละไม่เกิน $1 เมนู'],
@@ -467,7 +497,8 @@ var RestoCore = (function () {
           yieldPct: trim(i.yieldPct) === '' ? 100 : num(i.yieldPct), kind: kind,
           batchQty: num(i.batchQty), trackStock: trim(i.trackStock) === '' ? true : bool(i.trackStock),
           shelfLifeDays: trim(i.shelfLifeDays) === '' ? '' : num(i.shelfLifeDays),
-          conversions: convs[i.id] || [], prepLines: kind === 'prep' ? (lines[i.id] || []) : [] };
+          conversions: convs[i.id] || [], prepLines: kind === 'prep' ? (lines[i.id] || []) : [],
+          allergens: trim(i.allergens) ? trim(i.allergens).split(',').map(trim).filter(Boolean) : [] };
       });
       if (override) out.push(override);
       return out;
@@ -526,7 +557,9 @@ var RestoCore = (function () {
       var onHand = onHandMap();
       var onOrder = onOrderMap();
       var suppliers = byId(db.read('Suppliers'));
-      var costRows = byId(ingredientCostRows());
+      var costRowList = ingredientCostRows();
+      var costRows = byId(costRowList);
+      var allergenBook = RestoCosting.buildBook(costRowList);
       var actual = actualUnitCosts();
       return db.read('Ingredients').map(function (i) {
         var cr = costRows[i.id];
@@ -544,6 +577,10 @@ var RestoCore = (function () {
           onHand: qty, value: round(qty * num(i.costPerUnit)), status: status,
           yieldPct: cr.yieldPct, kind: cr.kind, batchQty: cr.batchQty, trackStock: cr.trackStock,
           shelfLifeDays: cr.shelfLifeDays, conversions: cr.conversions, prepLines: cr.prepLines,
+          allergens: cr.allergens,
+          allergensAll: RestoCosting.allergensFor([{ ingredientId: i.id }], allergenBook),
+          portionNote: i.portionNote || '', holdingNote: i.holdingNote || '', equipment: i.equipment || '',
+          prepMinutes: trim(i.prepMinutes) === '' ? '' : num(i.prepMinutes), photoUrl: i.photoUrl || '',
           actualUnitCost: actual[i.id] === undefined ? null : actual[i.id],
           costVariancePct: actual[i.id] === undefined || !(num(i.costPerUnit) > 0) ? null
             : round((actual[i.id] - num(i.costPerUnit)) / num(i.costPerUnit) * 100, 1)
@@ -585,6 +622,9 @@ var RestoCore = (function () {
         return {
           id: m.id, name: m.name, category: m.category, price: price, active: bool(m.active),
           version: num(m.version), recipe: lines, foodCost: cost, prices: prices[m.id] || {},
+          allergens: RestoCosting.allergensFor(recipes[m.id] || [], book),
+          portionNote: m.portionNote || '', holdingNote: m.holdingNote || '', equipment: m.equipment || '',
+          prepMinutes: trim(m.prepMinutes) === '' ? '' : num(m.prepMinutes), photoUrl: m.photoUrl || '',
           foodCostPct: price > 0 ? round(cost / price * 100, 1) : null,
           margin: round(price - cost, 2)
         };
@@ -711,6 +751,11 @@ var RestoCore = (function () {
         }).sort(function (a, b) { return a.name.localeCompare(b.name); }),
         menu: menuWithCost(),
         channels: ensureChannels(user),
+        promotions: promoRows(p.today ? reqDate(p.today, 'Today') : todayStr()).filter(function (x) {
+          // Also yesterday's last day: daily totals are often entered the next morning.
+          return x.status === 'active' || x.status === 'scheduled' ||
+            (x.status === 'ended' && x.endDate >= addDays(p.today ? reqDate(p.today, 'Today') : todayStr(), -1));
+        }),
         users: isOwner ? db.read('Users').map(publicUser) : [],
         // Active people only (for "made by" pickers); every role gets it, with no account details.
         team: active(db.read('Users')).map(function (u) {
@@ -905,6 +950,11 @@ var RestoCore = (function () {
         yieldPct: yieldPct, kind: kind, batchQty: '',
         trackStock: d.trackStock === undefined || trim(d.trackStock) === '' ? true : bool(d.trackStock),
         shelfLifeDays: optInt(d.shelfLifeDays, 'Shelf life (days)') };
+      if (d.allergens !== undefined) {
+        var codes = (d.allergens || []).map(trim).filter(Boolean);
+        codes.forEach(function (a) { if (RestoCosting.ALLERGENS.indexOf(a) < 0) fail('VALIDATION', 'Unknown allergen.'); });
+        data.allergens = RestoCosting.ALLERGENS.filter(function (a) { return codes.indexOf(a) >= 0; }).join(',');
+      }
       if (kind === 'prep') data.batchQty = round(reqNum(d.batchQty, 'Batch quantity', { positive: true }), 4);
       else data.trackStock = true;
       if (data.supplierId) findOrFail('Suppliers', data.supplierId, 'Supplier');
@@ -1172,19 +1222,69 @@ var RestoCore = (function () {
       var book = loadBook();
       var ts = nowIso();
       var sales = [], moves = [], noRecipe = [];
+      var promos = null;
+      // One unit of a dish at a promotion's price: what the restaurant is credited, discount split and commission.
+      function promoUnit(promo, item, promoPriceEach) {
+        return RestoPricing.promoEconomics({ type: 'fixedPrice', value: promoPriceEach, platformFundedPct: promo.platformFundedPct,
+          campaignCommissionPct: promo.campaignCommissionPct, targetPct: 30, channel: ch,
+          items: [{ id: item.id, name: item.name, listPrice: listPriceFor(item, ch.id), foodCost: item.foodCost, qty: 1 }] }).rows[0];
+      }
+      function findPromo(id) {
+        promos = promos || byId(promoRows(date));
+        var promo = promos[trim(id)];
+        if (!promo) findOrFail('Promotions', trim(id), 'Promotion');
+        if (!promoActiveFor(promo, date, ch.id)) fail('VALIDATION', 'Promotion "' + promo.name + '" isn\'t running on this date and channel.');
+        return promo;
+      }
+      // Expand bundle lines into one line per component; price promo lines on the server (client prices are ignored).
+      var expanded = [];
       lines.forEach(function (l, i) {
+        if (trim(l.promoId)) {
+          var promo = findPromo(l.promoId);
+          var n = reqNum(l.qty, 'Line ' + (i + 1) + ' quantity', { positive: true });
+          if (Math.round(n) !== n) fail('VALIDATION', 'Line ' + (i + 1) + ': quantity must be a whole number.');
+          if (promo.type === 'bundle') {
+            var comps = promo.items.filter(function (c) { return menu[c.menuItemId]; }).map(function (c) {
+              var d = menu[c.menuItemId];
+              return { id: d.id, item: d, listPrice: listPriceFor(d, ch.id), qty: c.qty };
+            });
+            var split = byId(RestoPricing.bundleSplit(comps, promo.value));
+            comps.forEach(function (c) {
+              expanded.push({ item: c.item, qty: n * c.qty, promo: promo, unit: promoUnit(promo, c.item, split[c.id].unitPrice), note: l.note });
+            });
+            return;
+          }
+          var dish = menu[l.menuItemId];
+          if (!dish) fail('VALIDATION', 'Line ' + (i + 1) + ': dish not found.');
+          if (!promo.items.some(function (x) { return x.menuItemId === dish.id; })) fail('VALIDATION', "Dish isn't in this promotion.");
+          var each = RestoPricing.promoPrice(promo.type, promo.value, listPriceFor(dish, ch.id));
+          expanded.push({ item: dish, qty: n, promo: promo, unit: promoUnit(promo, dish, each), note: l.note });
+          return;
+        }
         var item = menu[l.menuItemId];
         if (!item) fail('VALIDATION', 'Line ' + (i + 1) + ': dish not found.');
-        var qty = reqNum(l.qty, item.name + ' quantity', { positive: true });
+        expanded.push({ item: item, qty: l.qty, price: l.unitPrice, note: l.note });
+      });
+      expanded.forEach(function (x) {
+        var item = x.item;
+        var qty = reqNum(x.qty, item.name + ' quantity', { positive: true });
         if (Math.round(qty) !== qty) fail('VALIDATION', item.name + ': quantity must be a whole number.');
         var listPrice = listPriceFor(item, ch.id);
-        var price = l.unitPrice === undefined || l.unitPrice === '' ? listPrice : reqNum(l.unitPrice, item.name + ' price', { min: 0 });
-        var base = ch.commissionOnDiscounted ? price : listPrice;
+        var price, commission, discount = 0, platformDiscount = 0;
+        if (x.unit) {
+          price = x.unit.credited;
+          discount = x.unit.discount;
+          platformDiscount = x.unit.platformDiscount;
+          commission = x.unit.commission * qty;
+        } else {
+          price = x.price === undefined || x.price === '' ? listPrice : reqNum(x.price, item.name + ' price', { min: 0 });
+          commission = ch.commissionPct / 100 * (ch.commissionOnDiscounted ? price : listPrice) * qty;
+        }
         var sale = { id: newId('SAL'), date: date, menuItemId: item.id, itemName: item.name, qty: qty, unitPrice: round(price),
           total: round(qty * price), unitCost: item.foodCost, costTotal: round(qty * item.foodCost), channel: channel,
-          note: optStr(l.note, 200), voided: false, createdAt: ts, createdBy: user.username,
-          channelId: ch.id, commission: round(ch.commissionPct / 100 * base * qty), promoId: '', listPrice: round(listPrice),
-          discount: 0, platformDiscount: 0 };
+          note: optStr(x.note, 200), voided: false, createdAt: ts, createdBy: user.username,
+          channelId: ch.id, commission: round(commission), promoId: x.promo ? x.promo.id : '', listPrice: round(listPrice),
+          discount: round(discount), platformDiscount: round(platformDiscount) };
         sales.push(sale);
         if (!item.recipe.length) noRecipe.push(item.name);
         // Each dish sold deducts its recipe ingredients from stock.
@@ -1212,6 +1312,7 @@ var RestoCore = (function () {
           return { id: r.id, date: r.date, menuItemId: r.menuItemId, itemName: r.itemName, qty: num(r.qty),
             unitPrice: num(r.unitPrice), total: num(r.total), costTotal: num(r.costTotal), channel: r.channel,
             channelId: trim(r.channelId), commission: num(r.commission), listPrice: trim(r.listPrice) === '' ? num(r.unitPrice) : num(r.listPrice),
+            promoId: trim(r.promoId), discount: num(r.discount), platformDiscount: num(r.platformDiscount),
             note: r.note, voided: bool(r.voided), createdAt: r.createdAt, createdBy: r.createdBy };
         }),
         total: round(sum(liveRows, function (r) { return num(r.total); })),
@@ -1464,6 +1565,298 @@ var RestoCore = (function () {
       var days = dayCount(from, to);
       return { from: from, to: to, days: days, channelId: channelId, dishesSold: sold, threshold: me.threshold, avgCm: me.avgCm,
         indicative: sold < 5 || days < 14, items: items };
+    } };
+
+    /* SOP manuals */
+    function safeLink(v) {
+      var s = optStr(v, 500);
+      if (s && !/^https?:\/\//i.test(s)) fail('VALIDATION', 'Image link must start with http:// or https://.');
+      return s;
+    }
+    A['sop.save'] = { role: 'manager', write: true, fn: function (p, user) {
+      var id = trim(p.ownerId);
+      var table = 'Menu', row = db.read('Menu').filter(function (r) { return r.id === id; })[0];
+      if (!row) {
+        table = 'Ingredients';
+        row = findOrFail('Ingredients', id, 'Prep');
+        if (trim(row.kind) !== 'prep') fail('VALIDATION', 'Only dishes and preps have an SOP.');
+      }
+      if (num(p.version) !== num(row.version)) {
+        fail('CONFLICT', (table === 'Menu' ? 'Dish' : 'Ingredient') + ' "' + row.name + '" was changed by ' + (row.updatedBy || 'someone else') +
+          ' while you were editing. Your changes were not saved — reload to see the latest version.');
+      }
+      var n = p.notes || {};
+      var steps = p.steps || [];
+      if (steps.length > 40) fail('VALIDATION', 'Too many steps (max 40).');
+      var clean = steps.map(function (st, i) {
+        var text = trim(st.text);
+        if (!text) fail('VALIDATION', 'Step ' + (i + 1) + ': write what to do.');
+        return { id: newId('SOP'), ownerId: id, stepNo: i + 1, text: optStr(text, 500),
+          minutes: optInt(st.minutes, 'Step ' + (i + 1) + ' minutes'), imageUrl: safeLink(st.imageUrl), critical: bool(st.critical) };
+      });
+      var patch = { portionNote: optStr(n.portionNote, 300), holdingNote: optStr(n.holdingNote, 300), equipment: optStr(n.equipment, 300),
+        prepMinutes: optInt(n.prepMinutes, 'Prep time (minutes)'), photoUrl: safeLink(n.photoUrl),
+        updatedAt: nowIso(), updatedBy: user.username, version: num(row.version) + 1 };
+      db.updateWhere(table, function (r) { return r.id === id; }, patch);
+      db.removeWhere('SopSteps', function (r) { return r.ownerId === id; });
+      if (clean.length) db.append('SopSteps', clean);
+      return { version: patch.version, steps: clean.map(function (c) {
+        return { stepNo: c.stepNo, text: c.text, minutes: c.minutes, imageUrl: c.imageUrl, critical: c.critical }; }) };
+    } };
+
+    A['sop.list'] = { role: 'staff', write: false, fn: function () {
+      var out = {};
+      db.read('SopSteps').forEach(function (r) {
+        (out[r.ownerId] = out[r.ownerId] || []).push({ stepNo: num(r.stepNo), text: r.text, minutes: trim(r.minutes) === '' ? '' : num(r.minutes),
+          imageUrl: r.imageUrl || '', critical: bool(r.critical) });
+      });
+      Object.keys(out).forEach(function (k) { out[k].sort(function (a, b) { return a.stepNo - b.stepNo; }); });
+      return out;
+    } };
+
+    /* Promotions */
+    function todayStr() { return env.now().toISOString().slice(0, 10); }
+    function csv(v) { return trim(v) ? trim(v).split(',').map(function (x) { return x.trim(); }).filter(Boolean) : []; }
+    function optPct(v) { return v === '' || v === null || v === undefined ? null : num(v); }
+
+    function promoStatus(row, today) {
+      var st = trim(row.status);
+      if (st === 'draft' || st === 'cancelled') return st;
+      if (trim(row.startDate) > today) return 'scheduled';
+      if (trim(row.endDate) && trim(row.endDate) < today) return 'ended';
+      return 'active';
+    }
+    function weekdayOf(date) {
+      return new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10))).getUTCDay();
+    }
+    /** Does this promotion apply to a sale on `date` through `channelId`? */
+    function promoActiveFor(promo, date, channelId) {
+      var st = trim(promo.status);
+      if (st === 'draft' || st === 'cancelled') return false;
+      if (date < promo.startDate || (promo.endDate && date > promo.endDate)) return false;
+      if (promo.weekdays.length && promo.weekdays.indexOf(weekdayOf(date)) < 0) return false;
+      return !promo.channelIds.length || promo.channelIds.indexOf(channelId) >= 0;
+    }
+    function promoRows(today) {
+      var names = byId(db.read('Menu'));
+      var items = {};
+      db.read('PromotionItems').forEach(function (r) {
+        (items[r.promoId] = items[r.promoId] || []).push({ menuItemId: r.menuItemId,
+          name: names[r.menuItemId] ? names[r.menuItemId].name : '(removed dish)', qty: num(r.qty) || 1 });
+      });
+      return db.read('Promotions').map(function (r) {
+        var type = trim(r.type);
+        return { id: r.id, name: r.name, type: type, value: type === 'buyXGetY' ? trim(r.value) : num(r.value),
+          channelIds: csv(r.channelIds), startDate: trim(r.startDate), endDate: trim(r.endDate),
+          weekdays: csv(r.weekdays).map(Number), platformFundedPct: num(r.platformFundedPct),
+          campaignCommissionPct: optPct(r.campaignCommissionPct), storedStatus: trim(r.status), status: promoStatus(r, today),
+          note: r.note || '', version: num(r.version), items: items[r.id] || [] };
+      }).sort(function (a, b) { return b.startDate < a.startDate ? -1 : b.startDate > a.startDate ? 1 : a.name.localeCompare(b.name); });
+    }
+    /** The engine's view of a promotion on one channel, using each dish's channel price and current food cost. */
+    function promoEconFor(promo, channel, menu) {
+      var target = num(settings().targetFoodCostPct) || 30;
+      return RestoPricing.promoEconomics({ type: promo.type, value: promo.value, platformFundedPct: promo.platformFundedPct,
+        campaignCommissionPct: promo.campaignCommissionPct, targetPct: target, channel: channel,
+        items: promo.items.filter(function (i) { return menu[i.menuItemId]; }).map(function (i) {
+          var d = menu[i.menuItemId];
+          return { id: d.id, name: d.name, listPrice: listPriceFor(d, channel.id), foodCost: d.foodCost, qty: i.qty };
+        }) });
+    }
+    function promoChannels(promo, channels) {
+      return promo.channelIds.length
+        ? channels.filter(function (c) { return promo.channelIds.indexOf(c.id) >= 0; })
+        : channels.filter(function (c) { return c.active; });
+    }
+    /** Validates a promotion payload; name and dates are optional when only checking an offer. */
+    function parsePromo(p, user, forCheck) {
+      var d = p.item || {};
+      var type = trim(d.type);
+      if (RestoPricing.PROMO_TYPES.indexOf(type) < 0) fail('VALIDATION', 'Unknown promotion type.');
+      var value;
+      if (type === 'buyXGetY') {
+        if (!RestoPricing.parseBxgy(d.value)) fail('VALIDATION', 'Buy-X-get-Y must look like 2+1.');
+        value = trim(d.value).replace(/\s+/g, '');
+      } else if (type === 'percentOff') {
+        value = num(d.value);
+        if (!(value > 0 && value <= 100)) fail('VALIDATION', 'Discount must be between 0 and 100 %.');
+      } else if (type === 'fixedPrice') {
+        value = round(reqNum(d.value, 'Promotion price', { min: 0 }), 2);
+      } else {
+        value = num(d.value);
+        if (!(value > 0)) fail('VALIDATION', 'Amount must be greater than 0.');
+        value = round(value, 2);
+      }
+      var pf = d.platformFundedPct === '' || d.platformFundedPct === undefined ? 0 : num(d.platformFundedPct);
+      if (pf < 0 || pf > 100) fail('VALIDATION', 'Platform share must be between 0 and 100 %.');
+      var cc = optPct(d.campaignCommissionPct);
+      if (cc !== null && (cc < 0 || cc > 99.9)) fail('VALIDATION', 'Commission must be between 0 and 99.9 %.');
+      var menu = byId(db.read('Menu'));
+      var seen = {};
+      var items = (p.items || []).map(function (x) {
+        var dish = menu[trim(x.menuItemId)];
+        if (!dish) findOrFail('Menu', trim(x.menuItemId), 'Dish');
+        if (seen[dish.id]) fail('VALIDATION', dish.name + ' is in the promotion twice.');
+        seen[dish.id] = true;
+        var q = type === 'bundle' ? Math.round(num(x.qty) || 1) : 1;
+        return { menuItemId: dish.id, qty: Math.max(1, q) };
+      });
+      if (!items.length) fail('VALIDATION', 'Choose at least one dish.');
+      if (type === 'bundle' && sum(items, function (i) { return i.qty; }) < 2) fail('VALIDATION', 'A bundle needs at least two dishes.');
+      var data = { type: type, value: value, platformFundedPct: round(pf, 2), campaignCommissionPct: cc === null ? '' : round(cc, 2) };
+      if (forCheck) return { data: data, items: items };
+      ensureChannels(user);
+      var channelIds = (d.channelIds || []).map(trim).filter(Boolean);
+      channelIds.forEach(function (id) { findOrFail('Channels', id, 'Sales channel'); });
+      var weekdays = (d.weekdays || []).map(function (w) {
+        var n = Number(w);
+        if (!(n >= 0 && n <= 6 && Math.round(n) === n)) fail('VALIDATION', 'Unknown weekday.');
+        return n;
+      });
+      var start = reqDate(d.startDate, 'Start date');
+      var end = trim(d.endDate) ? reqDate(d.endDate, 'End date') : '';
+      if (end && end < start) fail('VALIDATION', "End date can't be before the start date.");
+      data.id = trim(d.id); data.version = d.version;
+      data.name = reqStr(d.name, 'Promotion name', 80);
+      data.channelIds = channelIds.join(','); data.startDate = start; data.endDate = end;
+      data.weekdays = weekdays.filter(function (w, i) { return weekdays.indexOf(w) === i; }).sort().join(',');
+      data.status = bool(d.draft) ? 'draft' : 'scheduled';
+      data.note = optStr(d.note, 300);
+      var clash = db.read('Promotions').some(function (r) {
+        return r.id !== data.id && trim(r.status) !== 'cancelled' && trim(r.name).toLowerCase() === data.name.toLowerCase();
+      });
+      if (clash) fail('VALIDATION', 'Promotion "' + data.name + '" already exists.');
+      return { data: data, items: items };
+    }
+
+    A['promotions.save'] = { role: 'manager', write: true, fn: function (p, user) {
+      var parsed = parsePromo(p, user, false);
+      var data = parsed.data;
+      if (!data.id) delete data.id;
+      var saved = saveRow('Promotions', 'PRM', data, user, 'Promotion "' + data.name + '"');
+      db.removeWhere('PromotionItems', function (r) { return r.promoId === saved.id; });
+      db.append('PromotionItems', parsed.items.map(function (i) {
+        return { id: newId('PRI'), promoId: saved.id, menuItemId: i.menuItemId, qty: i.qty };
+      }));
+      return promoRows(todayStr()).filter(function (x) { return x.id === saved.id; })[0];
+    } };
+
+    A['promotions.cancel'] = { role: 'manager', write: true, fn: function (p, user) {
+      var row = findOrFail('Promotions', trim(p.id), 'Promotion');
+      if (trim(row.status) === 'cancelled') fail('VALIDATION', 'This promotion is already cancelled.');
+      db.updateWhere('Promotions', function (r) { return r.id === row.id; },
+        { status: 'cancelled', updatedAt: nowIso(), updatedBy: user.username, version: num(row.version) + 1 });
+      return true;
+    } };
+
+    A['promotions.list'] = { role: 'manager', write: false, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var channels = ensureChannels(user);
+      var menu = byId(menuWithCost());
+      return promoRows(today).map(function (x) {
+        x.economics = promoChannels(x, channels).map(function (c) {
+          var e = promoEconFor(x, c, menu);
+          var o = e.overall || {};
+          return { channelId: c.id, channelName: c.name, verdict: o.verdict || 'thin', cmBefore: o.cmBefore, cmDuring: o.cmDuring, uplift: o.uplift };
+        });
+        return x;
+      });
+    } };
+
+    A['promotions.get'] = { role: 'manager', write: false, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var channels = ensureChannels(user);
+      var x = promoRows(today).filter(function (r) { return r.id === trim(p.id); })[0];
+      if (!x) findOrFail('Promotions', trim(p.id), 'Promotion');
+      var menu = byId(menuWithCost());
+      x.channels = promoChannels(x, channels).map(function (c) {
+        var e = promoEconFor(x, c, menu);
+        return { channelId: c.id, channelName: c.name, rows: e.rows, overall: e.overall, worst: e.worst };
+      });
+      return x;
+    } };
+
+    A['promotions.check'] = { role: 'manager', write: false, fn: function (p, user) {
+      var channels = ensureChannels(user);
+      var parsed = parsePromo(p, user, true);
+      var channel = findOrFail('Channels', trim(p.channelId), 'Sales channel');
+      channel = channels.filter(function (c) { return c.id === channel.id; })[0];
+      var menu = byId(menuWithCost());
+      var promo = { type: parsed.data.type, value: parsed.data.value, platformFundedPct: parsed.data.platformFundedPct,
+        campaignCommissionPct: optPct(parsed.data.campaignCommissionPct), items: parsed.items };
+      var e = promoEconFor(promo, channel, menu);
+      var co = null;
+      if (promo.type === 'percentOff') {
+        co = RestoPricing.counterOffer({ platformFundedPct: promo.platformFundedPct, campaignCommissionPct: promo.campaignCommissionPct,
+          targetPct: num(settings().targetFoodCostPct) || 30, channel: channel,
+          items: promo.items.map(function (i) { var d = menu[i.menuItemId];
+            return { id: d.id, name: d.name, listPrice: listPriceFor(d, channel.id), foodCost: d.foodCost, qty: 1 }; }) });
+      }
+      return { economics: e, counterOffer: co };
+    } };
+
+    /**
+     * Promotion results: per-day averages during the promotion against the 28 days before it,
+     * for the promoted dishes and for the whole restaurant on the promotion's channels.
+     */
+    A['promotions.results'] = { role: 'manager', write: false, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var channels = ensureChannels(user);
+      var promo = promoRows(today).filter(function (r) { return r.id === trim(p.id); })[0];
+      if (!promo) findOrFail('Promotions', trim(p.id), 'Promotion');
+      var start = promo.startDate;
+      var bFrom = addDays(start, -28), bTo = addDays(start, -1);
+      // Complete days only: today isn't over, so it would make any promotion look worse than it is.
+      var yesterday = addDays(today, -1);
+      var pTo = promo.endDate && promo.endDate < yesterday ? promo.endDate : yesterday;
+      var started = start <= yesterday;
+      var pDays = started ? dayCount(start, pTo) : 0;
+      var onChannel = {};
+      promoChannels(promo, channels).forEach(function (c) { onChannel[c.id] = true; });
+      if (!promo.channelIds.length) channels.forEach(function (c) { onChannel[c.id] = true; });
+      var promoted = {};
+      promo.items.forEach(function (i) { promoted[i.menuItemId] = true; });
+      var rows = live(db.read('Sales')).filter(function (r) {
+        if (!inRange(r.date, bFrom, pTo)) return false;
+        var ch = resolveChannel(r, channels);
+        return ch && onChannel[ch.id];
+      });
+      function totals(from, to, onlyPromoted) {
+        var t = { units: 0, revenue: 0, cm: 0 };
+        rows.forEach(function (r) {
+          if (!inRange(r.date, from, to) || (onlyPromoted && !promoted[r.menuItemId])) return;
+          t.units += num(r.qty); t.revenue += num(r.total); t.cm += num(r.total) - num(r.costTotal) - num(r.commission);
+        });
+        return t;
+      }
+      function perDay(t, days) {
+        return { units: days ? round(t.units / days, 2) : 0, revenue: days ? round(t.revenue / days) : 0, cm: days ? round(t.cm / days) : 0 };
+      }
+      function change(a, b) { return a > 0 ? round((b - a) / a * 100, 1) : null; }
+      var pb = perDay(totals(bFrom, bTo, true), 28), pd = perDay(started ? totals(start, pTo, true) : { units: 0, revenue: 0, cm: 0 }, pDays);
+      var rb = perDay(totals(bFrom, bTo, false), 28), rd = perDay(started ? totals(start, pTo, false) : { units: 0, revenue: 0, cm: 0 }, pDays);
+      var seen = {};
+      rows.forEach(function (r) { if (inRange(r.date, bFrom, bTo)) seen[r.date] = true; });
+      var daily = [];
+      for (var d = bFrom; d <= (started ? pTo : bTo); d = addDays(d, 1)) {
+        var cm = 0;
+        rows.forEach(function (r) { if (r.date === d && promoted[r.menuItemId]) cm += num(r.total) - num(r.costTotal) - num(r.commission); });
+        daily.push({ date: d, cm: round(cm), inPromo: d >= start });
+      }
+      var cmChange = change(rb.cm, rd.cm), unitChange = change(pb.units, pd.units);
+      // No sales in the 4 weeks before: nothing to compare against, so no verdict.
+      var verdict = !started ? 'tooEarly' : rb.revenue === 0 && rb.cm === 0 ? 'noBaseline'
+        : (cmChange || 0) >= 0 ? 'worked'
+          : (unitChange || 0) > 0 ? 'soldMoreEarnedLess' : 'didNotWork';
+      return {
+        baseline: { from: bFrom, to: bTo, daysWithSales: Object.keys(seen).length },
+        period: { from: start, to: started ? pTo : start, days: pDays },
+        weak: Object.keys(seen).length < 14,
+        promoted: { before: pb, during: pd, change: { units: unitChange, revenue: change(pb.revenue, pd.revenue), cm: change(pb.cm, pd.cm) } },
+        restaurant: { before: { revenue: rb.revenue, cm: rb.cm }, during: { revenue: rd.revenue, cm: rd.cm },
+          change: { revenue: change(rb.revenue, rd.revenue), cm: cmChange } },
+        verdict: verdict, daily: daily
+      };
     } };
 
     A['reports.summary'] = { role: 'manager', write: false, fn: function (p, user) {

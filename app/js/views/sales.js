@@ -6,6 +6,7 @@ import {
 } from '../ui.js';
 import { list } from '../app.js';
 import { t } from '../i18n.js';
+import { econFor, valueText } from './promo-builder.js';
 
 let day = null;
 
@@ -127,6 +128,12 @@ function entrySheet(ctx) {
   const cats = {};
   menu.forEach((m) => (cats[m.category || t('common.other')] ||= []).push(m));
   const qtys = {};
+  // Promotions running on the chosen date and channel (the server checks again when saving).
+  const promoOn = new Set();
+  const pq = {}; // `${promoId}|${menuItemId}` (or `${promoId}|*` for a bundle) → quantity
+  const weekday = (d) => new Date(Date.UTC(+d.slice(0, 4), +d.slice(5, 7) - 1, +d.slice(8, 10))).getUTCDay();
+  const runs = (p, date) => p.status !== 'draft' && p.status !== 'cancelled' && date >= p.startDate && (!p.endDate || date <= p.endDate)
+    && (!p.weekdays.length || p.weekdays.includes(weekday(date))) && (!p.channelIds.length || p.channelIds.includes(channelId));
 
   openSheet({
     title: t('sales.add'),
@@ -135,6 +142,7 @@ function entrySheet(ctx) {
         <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${day}" max="${today()}"></label>
         <label class="field"><span class="label">${t('sales.channel')}</span><select class="select" name="channelId">${options(channels.map((c) => ({ value: c.id, label: c.name })), channelId)}</select></label>
       </div>
+      <div id="promo-chips"></div><div id="promo-lines"></div>
       <div class="search" style="margin:0">${icon('search')}<input class="input" type="search" id="q" placeholder="${t('sales.findDish')}" aria-label="${t('sales.findDish')}"></div>
       <div class="dish-grid">${Object.keys(cats).sort().map((c) => html`<div data-cat>
         <div class="cat-title">${c}</div>
@@ -150,11 +158,73 @@ function entrySheet(ctx) {
       <button class="btn primary" id="save">${t('sales.save')}</button>`,
     onMount(el, close) {
       const form = el.querySelector('#f');
+      const ch = () => channels.find((c) => c.id === channelId);
+      const promoUnit = (p, dishId) => {
+        const items = p.type === 'bundle' ? p.items : p.items.filter((i) => i.menuItemId === dishId);
+        const e = econFor(boot, { ...p, items }, ch());
+        return e.rows[0] || null;
+      };
       const update = () => {
         let total = 0, count = 0;
         Object.entries(qtys).forEach(([id, q]) => { const m = menu.find((x) => x.id === id); total += q * priceOf(m); count += q; });
+        Object.entries(pq).forEach(([key, q]) => {
+          const [pid, dishId] = key.split('|');
+          const p = boot.promotions.find((x) => x.id === pid);
+          const u = p && promoUnit(p, dishId);
+          if (u) total += q * u.credited;
+          count += p && p.type === 'bundle' ? q * p.items.reduce((a, i) => a + (i.qty || 1), 0) : q;
+        });
         el.querySelector('#total').textContent = money(total);
         el.querySelector('#count').textContent = t('sales.nItems', { n: count });
+      };
+      const stepperHtml = (key, label) => html`<div class="stepper"><button type="button" data-pstep="-1" data-key="${key}" aria-label="${t('sales.oneLess', { name: label })}">${icon('minus')}</button>
+        <input type="number" inputmode="numeric" min="0" step="1" value="${pq[key] || ''}" placeholder="0" data-pkey="${key}" aria-label="${t('sales.qtyOf', { name: label })}">
+        <button type="button" data-pstep="1" data-key="${key}" aria-label="${t('sales.oneMore', { name: label })}">${icon('plus')}</button></div>`;
+      const drawPromos = () => {
+        const date = form.date.value;
+        const avail = (boot.promotions || []).filter((p) => runs(p, date));
+        // Drop promotions that no longer apply to this date or channel.
+        [...promoOn].forEach((pid) => {
+          if (avail.some((p) => p.id === pid)) return;
+          promoOn.delete(pid);
+          Object.keys(pq).filter((k) => k.startsWith(pid + '|')).forEach((k) => delete pq[k]);
+        });
+        mount(el.querySelector('#promo-chips'), avail.length ? html`<div class="small muted" style="margin:0 2px 6px">${t('sales.promosToday')}</div>
+          <div class="chips" role="group" aria-label="${t('sales.promosToday')}">${avail.map((p) =>
+            html`<button type="button" class="chip" data-promo="${p.id}" aria-pressed="${promoOn.has(p.id)}">${p.name}</button>`)}</div>` : '');
+        const on = avail.filter((p) => promoOn.has(p.id));
+        mount(el.querySelector('#promo-lines'), on.length ? html`<div class="card" style="margin-bottom:12px">${on.map((p) => {
+          if (p.type === 'bundle') {
+            const u = promoUnit(p);
+            const label = p.items.map((i) => (i.qty > 1 ? `${i.qty} × ${i.name}` : i.name)).join(' + ');
+            return html`<div class="dish-row"><div class="grow"><div class="title">${label}</div>
+              <div class="sub">${p.name} · ${valueText(p)}${u ? ` · ${t('sales.youGet', { amount: money(u.credited) })}` : ''}</div></div>
+              ${stepperHtml(p.id + '|*', label)}</div>`;
+          }
+          return p.items.filter((i) => menu.some((m) => m.id === i.menuItemId)).map((i) => {
+            const u = promoUnit(p, i.menuItemId);
+            return html`<div class="dish-row"><div class="grow"><div class="title">${i.name}</div>
+              <div class="sub">${p.name} · ${u ? money(u.promoPrice) : ''}${u && u.credited !== u.promoPrice ? ` · ${t('sales.youGet', { amount: money(u.credited) })}` : ''}</div></div>
+              ${stepperHtml(p.id + '|' + i.menuItemId, i.name)}</div>`;
+          });
+        })}</div>` : '');
+        $$('[data-promo]', el).forEach((b) => b.addEventListener('click', () => {
+          if (promoOn.has(b.dataset.promo)) {
+            promoOn.delete(b.dataset.promo);
+            Object.keys(pq).filter((k) => k.startsWith(b.dataset.promo + '|')).forEach((k) => delete pq[k]);
+          } else promoOn.add(b.dataset.promo);
+          drawPromos();
+        }));
+        const setP = (key, v) => {
+          v = Math.max(0, Math.floor(Number(v) || 0));
+          if (v) pq[key] = v; else delete pq[key];
+          const input = el.querySelector(`[data-pkey="${key}"]`);
+          if (input) { input.value = v || ''; input.closest('.stepper').classList.toggle('has-value', !!v); }
+          update();
+        };
+        $$('[data-pstep]', el).forEach((b) => b.addEventListener('click', () => setP(b.dataset.key, (pq[b.dataset.key] || 0) + Number(b.dataset.pstep))));
+        $$('[data-pkey]', el).forEach((i) => i.addEventListener('input', () => setP(i.dataset.pkey, i.value)));
+        update();
       };
       $$('[data-dish]', el).forEach((row) => {
         const input = row.querySelector('input');
@@ -174,8 +244,10 @@ function entrySheet(ctx) {
           const m = menu.find((x) => x.id === row.dataset.dish);
           row.querySelector('[data-price]').textContent = money(priceOf(m));
         });
-        update();
+        drawPromos();
       });
+      form.date.addEventListener('change', drawPromos);
+      drawPromos();
       el.querySelector('#q').addEventListener('input', (e) => {
         const q = e.target.value.trim().toLowerCase();
         $$('[data-dish]', el).forEach((r) => r.classList.toggle('hidden', !!q && !r.dataset.name.includes(q)));
@@ -183,6 +255,10 @@ function entrySheet(ctx) {
       });
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
         const lines = Object.entries(qtys).map(([menuItemId, qty]) => ({ menuItemId, qty }));
+        Object.entries(pq).forEach(([key, qty]) => {
+          const [promoId, dishId] = key.split('|');
+          lines.push(dishId === '*' ? { promoId, qty } : { promoId, menuItemId: dishId, qty });
+        });
         const r = await call('sales.add', { date: form.date.value, channelId: form.channelId.value, lines });
         close();
         day = form.date.value;

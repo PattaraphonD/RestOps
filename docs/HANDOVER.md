@@ -1,7 +1,7 @@
 # Restaurant Ops: Developer Handover
 
-**Version:** 1.4.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
-**Status (2026-11-14):** feature-complete v1. **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. **Layer 2 (v1.4) — channel pricing and menu analysis:** sales channels as records with commission and packaging, a price per channel, commission on every sale and in the P&L, suggested prices, menu engineering and a Needs attention card. Layer 2 screens were checked by script in demo mode in English and Thai; their phone-width layout still needs a visual check. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
+**Version:** 1.6.0 (`VERSION` in `app/js/core.js`, `CACHE` in `app/sw.js`)
+**Status (2026-11-14):** feature-complete v1. **Layer 1 (v1.3) — costing foundation:** units and conversions, yield (trim loss), prep items (sub-recipes), production runs, cost history and cost impact alerts. **Layer 2 (v1.4) — channel pricing and menu analysis:** sales channels as records with commission and packaging, a price per channel, commission on every sale and in the P&L, suggested prices, menu engineering and a Needs attention card. Layer 2 screens were checked by script in demo mode in English and Thai; their phone-width layout still needs a visual check. **Layer 3 (v1.5) — promotions:** a builder with a live profit check, a delivery-app offer check with a counter-offer, promo lines in sales entry (per dish, bundles, buy-X-get-Y) and results against the previous 4 weeks. Checked the same way; phone-width layout not yet checked by eye. **Layer 4 (v1.6) — SOP manuals:** step-by-step procedures for dishes and preps built from their recipes, quantities scaled by portions or batches, allergens derived from ingredients, critical food-safety steps, print (one SOP per page or the whole manual) and share. Tested end to end in demo mode in a browser at phone size, in English and Thai. **Deployed:** app on Vercel at https://restops-app.vercel.app/ (Root Directory `app`), API URL set in `app/config.js`. A full run of every flow against the real Google Sheet / Apps Script has not been recorded yet. The code is in a local git repository with no shared remote yet.
 
 This document is for the developer taking over the project. For end-user setup, see [README.md](../README.md).
 
@@ -123,13 +123,16 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | **Sales** | id, date, menuItemId, itemName, qty, unitPrice, total, unitCost, costTotal, channel, note, voided, createdAt, createdBy, channelId, commission, promoId, listPrice, discount, platformDiscount | `unitCost` is a **snapshot** of the dish cost at the time of sale. `unitPrice`/`total` = what the restaurant is credited before commission. `commission` is a snapshot. `promoId`/`discount`/`platformDiscount` are for promotions (Layer 3; 0 / blank until then). Older rows have only `channel` (a name) |
 | **Channels** | id, name, type, commissionPct, packagingCost, commissionOnDiscounted, active, sortOrder, createdAt, updatedAt, updatedBy, version | type: dineIn / takeaway / delivery / other. Created from the old `salesChannels` setting on first use |
 | **MenuPrices** | id, menuItemId, channelId, price | A dish's price on one channel; no row = the dish's own price |
+| **Promotions** | id, name, type, value, channelIds, startDate, endDate, weekdays, platformFundedPct, campaignCommissionPct, status, note, createdAt, createdBy, updatedAt, updatedBy, version | type: percentOff / amountOff / fixedPrice / bundle / buyXGetY (value "2+1"). Stored status: draft / scheduled / cancelled; shown as scheduled / active / ended by date. Blank channelIds or weekdays = all |
+| **PromotionItems** | id, promoId, menuItemId, qty | The dishes a promotion covers (qty only matters for bundles) |
+| **SopSteps** | id, ownerId, stepNo, text, minutes, imageUrl, critical | Steps of a dish's or prep's SOP; replaced as a whole on each `sop.save` |
 | **Expenses** | id, date, category, description, amount, paymentMethod, note, voided, createdAt, createdBy | |
 | **PurchaseOrders** | id, poNumber, supplierId, status, orderDate, expectedDate, note, total, sentAt, sentBy, closedAt, closedBy, closeReason, createdAt, createdBy, updatedAt, updatedBy, version | status: draft → sent → partial → received; or closed (short) / cancelled |
 | **PurchaseOrderLines** | id, poId, ingredientId, qtyOrdered, unitPrice, note | Replaced as a whole while the PO is a draft |
 | **SupplierInvoices** | id, invoiceNo, supplierId, poId, invoiceDate, dueDate, subtotal, vat, total, status, exceptionCount, varianceAmount, reviewNote, reviewedAt, reviewedBy, paidAt, paidBy, paymentMethod, paymentRef, note, createdAt, createdBy, updatedAt, updatedBy, version | status: matched / exception / noPo → approved / disputed → paid |
 | **SupplierInvoiceLines** | id, invoiceId, ingredientId, qty, unitPrice, total | |
 
-**Columns added in v1.2 (appended, so old sheets upgrade in place):** Suppliers `leadTimeDays`, `paymentTermsDays`; Ingredients `parLevel`; Purchases `poId`, `poLineId`. **Added in v1.3:** Ingredients `yieldPct`, `kind`, `batchQty`, `trackStock`, `shelfLifeDays`; Recipes `unit`, `yieldPct`; new tabs IngredientUnits, PrepRecipes, CostChanges, ProductionRuns. **Added in v1.4:** Sales `channelId`, `commission`, `promoId`, `listPrice`, `discount`, `platformDiscount`; new tabs Channels, MenuPrices. `Server.gs` → `prepareTab_()` adds missing tabs and columns automatically on first use (and in `setup()`). It refuses to touch a tab whose existing headers differ.
+**Columns added in v1.2 (appended, so old sheets upgrade in place):** Suppliers `leadTimeDays`, `paymentTermsDays`; Ingredients `parLevel`; Purchases `poId`, `poLineId`. **Added in v1.3:** Ingredients `yieldPct`, `kind`, `batchQty`, `trackStock`, `shelfLifeDays`; Recipes `unit`, `yieldPct`; new tabs IngredientUnits, PrepRecipes, CostChanges, ProductionRuns. **Added in v1.4:** Sales `channelId`, `commission`, `promoId`, `listPrice`, `discount`, `platformDiscount`; new tabs Channels, MenuPrices. **Added in v1.5:** new tabs Promotions, PromotionItems. **Added in v1.6:** Ingredients `portionNote`, `holdingNote`, `equipment`, `prepMinutes`, `allergens` (csv of codes), `photoUrl`; Menu `portionNote`, `holdingNote`, `equipment`, `prepMinutes`, `photoUrl`; new tab SopSteps. `Server.gs` → `prepareTab_()` adds missing tabs and columns automatically on first use (and in `setup()`). It refuses to touch a tab whose existing headers differ.
 
 **Quantity received is never stored on the PO.** It is always the sum of non-voided `Purchases` rows with that `poLineId`. Voiding a receipt re-opens the order (`refreshPoStatus`).
 
@@ -147,7 +150,7 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 | `byproduct` | positive | something useful left over (e.g. chicken fat from stock), valued at its cost |
 
 **Conventions**
-- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN, CHN, MPR).
+- IDs: `PREFIX-XXXXXXXXXX` (ING, SUP, PUR, MOV, MENU, REC, SAL, EXP, USR, IUN, PRL, CST, RUN, CHN, MPR, PRM, PRI, SOP).
 - Units in recipe, prep and conversion lines are stored as a unit code (`g`, `kg`, `ml`, `l`, `pcs` …) when the text is a known unit or alias, otherwise as typed. An ingredient's own stock unit is stored as typed (`กก.` in Thai).
 - Dates are `YYYY-MM-DD` text; timestamps are ISO-8601 text. `TEXT_COLUMNS` are formatted as plain text by `setup()` so Sheets doesn't convert them. `Server.gs` also converts any `Date` cells back on read.
 - Booleans are `TRUE`/`FALSE`. Read them with `bool()` in core.
@@ -202,6 +205,21 @@ Defined in `SCHEMA` in `core.js`. **Column order = sheet column order.** `setup(
 - **Food cost % stays on the menu price** in Menu, reports and the dashboard. Delivery profitability is shown as margin after commission.
 - **Menu engineering** (`menuEngineering`, `menu.analysis`): per dish, CM = revenue − food cost − commission. Popular when menu mix % ≥ 70 % × (1 ÷ dishes sold); high margin when CM per dish ≥ the sales-weighted average. Star / Plowhorse / Puzzle / Dog. Promotion sales (`promoId` set) are left out unless asked. `indicative` when fewer than 5 dishes sold or under 14 days.
 - **Needs attention** (`reports.summary.attention`): active dish × active channel pairs sold in the last 28 days that miss the target after commission; top 3 by (suggested − price) × qty.
+**SOP manuals (v1.6)**
+
+- **Allergens** are the 14 EU major allergens (`RestoCosting.ALLERGENS`). They are set only on ingredients; a prep's and a dish's allergens are derived from the recipe, recursively (`allergensFor`, cycle-safe).
+- **SOP quantities** are the recipe's net amounts × portions (dish) or batches (prep), shown in the easiest unit (`humanQty`: 1500 g → 1.5 kg, 0.25 kg → 250 g).
+- `sop.save` changes only the SOP fields of a dish or prep (version-checked) and replaces its steps; photo links must be http(s); at most 40 steps.
+
+**Promotions (v1.5, engine in `pricing.js`)**
+
+- **Per unit** (one dish, or one whole bundle): promo price = what the customer pays (% off, amount off, special price, list × x ÷ (x + y) for buy-X-get-Y, or the set price). The cut is split between the restaurant (`discount`) and the app (`platformDiscount` = cut × platformFundedPct). **Credited** = promo price + the app's share (= list − restaurant discount; a set priced above its dishes is credited what the customer pays). **Commission** = campaign rate (or the channel rate) × the promo price (or the list price if the channel doesn't charge on discounted prices).
+- **CM before** = list × (1 − channel rate) − food cost − packaging; **CM during** = credited − commission − food cost − packaging. **Cost % during** = (food + packaging) ÷ (credited − commission).
+- **Verdict:** `loss` if CM during < 0; `profitable` if cost % ≤ target + 5; otherwise `thin`. **Break-even uplift** = CM before ÷ CM during − 1.
+- **Counter-offer** (`counterOffer`): the largest % off (0.5 steps, up to 90) at which every dish stays `profitable` (dishes already off target left out), and the largest at which every dish still makes money.
+- **Bundles** are one unit in the profit check. When sold, each component gets its own sale row; the set price is split by list price (equally when the list prices are all 0).
+- **Sales:** promo lines are priced on the server (client prices ignored) and refused when the promotion isn't running on that date, weekday and channel, or the dish isn't in it.
+- **Results** (`promotions.results`): per-day averages of complete days only (the period ends yesterday) against the 28 days before the start, on the promotion's channels, for the promoted dishes and the whole restaurant. CM = total − food cost − commission. `worked` if the restaurant's CM per day didn't fall; `soldMoreEarnedLess` if promoted units rose but CM fell; otherwise `didNotWork`; `tooEarly` before the first full day; `noBaseline` when there were no sales in the 28 days before. Sales entry also offers a promotion on the day after it ends, for next-morning entry. `weak` when fewer than 14 baseline days had sales.
 - **Reports (`reports.summary`)** for a month:
   - Revenue = Σ Sales.total
   - COGS = Σ Sales.costTotal (the snapshot)
@@ -240,11 +258,18 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 | `menu.save` | manager | ✓ | item {id?, version?, name, price, category, active}, recipe[{ingredientId, qty (net), unit, yieldPct}], prices?[{channelId, price}] (replaced only when sent; blank price removes it) |
 | `menu.applyPrices` | manager | ✓ | channelId, items[{menuItemId, price}] (max 200) → {count} |
 | `menu.analysis` | manager | | from, to, channelId?, includePromo? → menu-engineering classes per dish |
+| `promotions.save` | manager | ✓ | item {id?, version?, name, type, value, channelIds[], startDate, endDate?, weekdays[], platformFundedPct?, campaignCommissionPct?, note, draft}, items[{menuItemId, qty?}] |
+| `promotions.list` / `.get` | manager | | today / id, today → rows with status and profit check per channel |
+| `promotions.check` | manager | | channelId, item {type, value, platformFundedPct?, campaignCommissionPct?}, items → {economics, counterOffer} (unsaved) |
+| `promotions.cancel` | manager | ✓ | id |
+| `sop.save` | manager | ✓ | ownerId (dish or prep), version, notes {portionNote, holdingNote, equipment, prepMinutes, photoUrl}, steps[{text, minutes?, imageUrl?, critical?}] → {version, steps} |
+| `sop.list` | staff | | none → {ownerId: steps[]} |
+| `promotions.results` | manager | | id, today → before/during per day, change %, verdict, daily margin |
 | `channels.save` | manager | ✓ | item {id?, version?, name, type, commissionPct (0–99.9), packagingCost, commissionOnDiscounted, active, sortOrder}; the last active channel can't be turned off |
 | `production.add` | staff | ✓ | date, prepId, batches, producedQty, producedBy (username), note?, inputs?[{ingredientId, qty, unit}], byproducts?[{ingredientId, qty, unit}] → {run, warnings} |
 | `production.list` | staff | | from?, to?, prepId?, limit? |
 | `production.void` | manager | ✓ | id (also voids its movements) |
-| `sales.add` | staff | ✓ | date, channelId (or legacy channel name), lines[{menuItemId, qty, unitPrice?}] → stores channel price, listPrice and commission; also writes `sale` movements |
+| `sales.add` | staff | ✓ | date, channelId (or legacy channel name), lines[{menuItemId, qty, unitPrice?}] or promo lines [{menuItemId, qty, promoId}] / bundle lines [{promoId, qty}] → stores channel price, listPrice, commission, promo discount split; also writes `sale` movements |
 | `sales.list` | staff | | from, to |
 | `sales.void` | manager | ✓ | id (also voids its movements) |
 | `expenses.add` / `.list` / `.void` | manager | ✓ / – / ✓ | date, category, amount, description, paymentMethod, note |
@@ -298,7 +323,7 @@ Response: `{ ok: true, data }` or `{ ok: false, error: { code, message } }`. `la
 - **Theme:** light, dark, or follow the system (`ro.theme` in localStorage).
 - **i18n:** `t(key, vars)` in `i18n.js`. Values are strings with `{var}` or functions (for English plurals). Thai mode formats with `th-TH` (Buddhist-era years). User data is stored exactly as typed. Server errors are translated in `core.js` (`translate()`).
 
-**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v3` (v1.3 and v1.4 changed the sample data, so older demo data is ignored and the demo reseeds).
+**localStorage keys:** `ro.token`, `ro.user`, `ro.apiUrl`, `ro.mode` (`remote` | `demo`), `ro.lang`, `ro.theme`, `ro.demo.db.v5` (v1.3–v1.6 changed the sample data, so older demo data is ignored and the demo reseeds).
 
 ---
 
