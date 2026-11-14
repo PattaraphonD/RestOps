@@ -18,8 +18,19 @@ export const session = {
   get token() { return store.get(K.token); },
   get user() { try { return JSON.parse(store.get(K.user) || 'null'); } catch { return null; } },
   get mode() { return store.get(K.mode) || 'remote'; },
-  get apiUrl() { return store.get(K.url) || (window.RESTO_CONFIG && window.RESTO_CONFIG.apiUrl) || ''; },
-  setApiUrl(url) { store.set(K.url, url ? url.trim() : null); },
+  /** The shop's address from config.js, unless this phone was given a different one. */
+  get defaultApiUrl() { return (window.RESTO_CONFIG && window.RESTO_CONFIG.apiUrl) || ''; },
+  get apiUrl() {
+    let saved = store.get(K.url);
+    // Moving to Supabase: a phone that remembered the old Apps Script address follows config.js instead.
+    if (saved && /script\.google/.test(saved) && /\.supabase\.co\//.test(this.defaultApiUrl)) { store.set(K.url, null); saved = null; }
+    return saved || this.defaultApiUrl;
+  },
+  /** Remember an address only when it differs from config.js, so a later change there reaches every phone. */
+  setApiUrl(url) {
+    const v = url ? url.trim() : '';
+    store.set(K.url, v && v !== this.defaultApiUrl ? v : null);
+  },
   setMode(mode) { store.set(K.mode, mode); },
   save(token, user) { store.set(K.token, token); store.set(K.user, JSON.stringify(user)); },
   setUser(user) { store.set(K.user, JSON.stringify(user)); },

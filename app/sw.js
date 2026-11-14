@@ -1,6 +1,6 @@
 // Service worker: caches the app shell so it opens instantly and works without signal.
 // Data calls go to the network (the Apps Script URL is never cached).
-const CACHE = 'resto-ops-v2.0.0';
+const CACHE = 'resto-ops-v2.0.1';
 const SHELL = [
   './', './index.html', './config.js', './manifest.webmanifest', './css/app.css',
   './js/costing.js', './js/pricing.js', './js/core.js', './js/i18n.js', './js/app.js', './js/api.js', './js/ui.js', './js/charts.js', './js/demo.js',
