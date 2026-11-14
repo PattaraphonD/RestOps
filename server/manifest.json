@@ -1,0 +1,500 @@
+{
+  "auth.changePassword": [
+    "Settings",
+    "Users"
+  ],
+  "auth.login": [
+    "Settings",
+    "Users"
+  ],
+  "auth.logout": [
+    "Settings",
+    "Users"
+  ],
+  "bootstrap": [
+    "Channels",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "ProductionRuns",
+    "PromotionItems",
+    "Promotions",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Recipes",
+    "Settings",
+    "StockMovements",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "channels.save": [
+    "Channels",
+    "Settings",
+    "Users"
+  ],
+  "costs.overhead": [
+    "Expenses",
+    "Sales",
+    "Settings",
+    "Users"
+  ],
+  "day.close": [
+    "DayCloses",
+    "Sales",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "day.status": [
+    "DayCloses",
+    "Settings",
+    "Users"
+  ],
+  "expenses.add": [
+    "Expenses",
+    "Settings",
+    "Users"
+  ],
+  "expenses.list": [
+    "Expenses",
+    "Settings",
+    "Users"
+  ],
+  "expenses.void": [
+    "Expenses",
+    "Settings",
+    "Users"
+  ],
+  "ingredients.costHistory": [
+    "CostChanges",
+    "Settings",
+    "Users"
+  ],
+  "ingredients.save": [
+    "CostChanges",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "PrepRecipes",
+    "Recipes",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "invoices.approve": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "SupplierInvoiceLines",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "invoices.dispute": [
+    "Ingredients",
+    "Settings",
+    "SupplierInvoiceLines",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "invoices.get": [
+    "Ingredients",
+    "Settings",
+    "SupplierInvoiceLines",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "invoices.list": [
+    "PurchaseOrders",
+    "Settings",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "invoices.pay": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "SupplierInvoiceLines",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "invoices.save": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "SupplierInvoiceLines",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "menu.analysis": [
+    "Channels",
+    "Sales",
+    "Settings",
+    "Users"
+  ],
+  "menu.applyPrices": [
+    "Channels",
+    "Menu",
+    "MenuPrices",
+    "Settings",
+    "Users"
+  ],
+  "menu.save": [
+    "Channels",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "Recipes",
+    "Settings",
+    "Users"
+  ],
+  "movements.add": [
+    "Ingredients",
+    "Purchases",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "movements.list": [
+    "Ingredients",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "movements.void": [
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "po.cancel": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "po.close": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "po.get": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "po.list": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "po.receive": [
+    "CostChanges",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Recipes",
+    "Settings",
+    "StockMovements",
+    "Suppliers",
+    "Users"
+  ],
+  "po.save": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "po.send": [
+    "Ingredients",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "po.suggestions": [
+    "IngredientUnits",
+    "Ingredients",
+    "PrepRecipes",
+    "ProductionRuns",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "StockMovements",
+    "Suppliers",
+    "Users"
+  ],
+  "production.add": [
+    "IngredientUnits",
+    "Ingredients",
+    "PrepRecipes",
+    "ProductionRuns",
+    "Purchases",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "production.list": [
+    "Ingredients",
+    "ProductionRuns",
+    "Settings",
+    "Users"
+  ],
+  "production.void": [
+    "ProductionRuns",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "promotions.cancel": [
+    "Promotions",
+    "Settings",
+    "Users"
+  ],
+  "promotions.check": [
+    "Channels",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "Recipes",
+    "Settings",
+    "Users"
+  ],
+  "promotions.get": [
+    "Channels",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "PromotionItems",
+    "Promotions",
+    "Recipes",
+    "Settings",
+    "Users"
+  ],
+  "promotions.list": [
+    "Channels",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "PromotionItems",
+    "Promotions",
+    "Recipes",
+    "Settings",
+    "Users"
+  ],
+  "promotions.results": [
+    "Channels",
+    "Menu",
+    "PromotionItems",
+    "Promotions",
+    "Sales",
+    "Settings",
+    "Users"
+  ],
+  "promotions.save": [
+    "Channels",
+    "Menu",
+    "PromotionItems",
+    "Promotions",
+    "Settings",
+    "Users"
+  ],
+  "purchases.add": [
+    "CostChanges",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "Purchases",
+    "Recipes",
+    "Settings",
+    "StockMovements",
+    "Suppliers",
+    "Users"
+  ],
+  "purchases.list": [
+    "Ingredients",
+    "Purchases",
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "purchases.void": [
+    "Purchases",
+    "Settings",
+    "Users"
+  ],
+  "reports.period": [
+    "Channels",
+    "DayCloses",
+    "Expenses",
+    "Ingredients",
+    "Purchases",
+    "Sales",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "reports.summary": [
+    "Channels",
+    "Expenses",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "ProductionRuns",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Recipes",
+    "Sales",
+    "Settings",
+    "StockMovements",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "sales.add": [
+    "Channels",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "PromotionItems",
+    "Promotions",
+    "Recipes",
+    "Sales",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "sales.list": [
+    "Sales",
+    "Settings",
+    "Users"
+  ],
+  "sales.void": [
+    "Sales",
+    "Settings",
+    "StockMovements",
+    "Users"
+  ],
+  "settings.save": [
+    "Settings",
+    "Users"
+  ],
+  "sop.list": [
+    "Settings",
+    "SopSteps",
+    "Users"
+  ],
+  "sop.save": [
+    "Ingredients",
+    "Menu",
+    "Settings",
+    "SopSteps",
+    "Users"
+  ],
+  "stock.budget": [
+    "Purchases",
+    "Sales",
+    "Settings",
+    "Users"
+  ],
+  "stock.levels": [
+    "IngredientUnits",
+    "Ingredients",
+    "PrepRecipes",
+    "ProductionRuns",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Settings",
+    "StockMovements",
+    "Suppliers",
+    "Users"
+  ],
+  "suppliers.save": [
+    "Settings",
+    "Suppliers",
+    "Users"
+  ],
+  "today.summary": [
+    "Channels",
+    "DayCloses",
+    "IngredientUnits",
+    "Ingredients",
+    "Menu",
+    "MenuPrices",
+    "PrepRecipes",
+    "ProductionRuns",
+    "PromotionItems",
+    "Promotions",
+    "PurchaseOrderLines",
+    "PurchaseOrders",
+    "Purchases",
+    "Recipes",
+    "Sales",
+    "Settings",
+    "StockMovements",
+    "SupplierInvoices",
+    "Suppliers",
+    "Users"
+  ],
+  "users.save": [
+    "Settings",
+    "Users"
+  ]
+}

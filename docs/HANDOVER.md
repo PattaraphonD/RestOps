@@ -375,7 +375,7 @@ The demo seeds 62 days of history: purchases, orders and invoices, daily sales, 
 | App | Vercel, https://restops-app.vercel.app/ (Root Directory `app`) | Redeploy from the Vercel dashboard or CLI (`vercel --prod` from `app/`), or push to the connected git branch |
 
 Release checklist:
-1. Bump `VERSION` in `core.js` and `CACHE` in `sw.js`.
+1. Bump `VERSION` in `core.js`, `CACHE` in `sw.js` and `app-version` in `index.html` (a test checks all three: an unchanged index.html is answered with 304 and browsers keep its old security headers).
 2. Run the tests and the two Python tools above.
 3. Update Apps Script first, then the app.
 
