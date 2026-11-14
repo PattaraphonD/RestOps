@@ -11,6 +11,7 @@ import { sopSheet } from './sop.js';
 import { recipeLines } from './recipe-lines.js';
 import { produceSheet } from './production.js';
 import { sparkline } from '../charts.js';
+import { categoryField, wireCategoryField } from './categories.js';
 
 const ui = { tab: 'levels', filter: 'all', search: '' };
 
@@ -284,6 +285,77 @@ function entrySheet(ctx, e) {
 
 /* ---------------------------------------------------------- item details */
 
+/** Who sells this ingredient, in what pack and at what price per stock unit (preferred first, cheapest marked). */
+function packsCard(ctx, i) {
+  const items = i.supplierItems || [];
+  const manager = ctx.can('manager');
+  const u = unitLabel(i.unit);
+  return html`<div class="section-head"><h2 style="font-size:15px">${t('pack.title')}</h2>
+      ${manager ? html`<button class="btn ghost sm" data-pack="">${icon('plus')}${t('pack.add')}</button>` : ''}</div>
+    <div class="card" style="margin-bottom:14px">${items.length ? html`<ul class="list">${items.map((x) => html`<li>
+      <${manager ? 'button' : 'div'} class="row" ${manager ? html`data-pack="${x.id}"` : ''}>
+        <span class="grow"><div class="title">${x.supplierName}${x.preferred ? html` <span class="pill brand">${t('pack.preferred')}</span>` : ''}${x.cheapest ? html` <span class="pill good">${t('pack.cheapest')}</span>` : ''}</div>
+          <div class="sub">${packLabel(x, u)} · ${money(x.packPrice)}${x.minPacks > 1 ? ` · ${t('pack.min', { n: x.minPacks })}` : ''}${x.supplierCode ? ` · ${t('pack.code', { code: x.supplierCode })}` : ''}</div></span>
+        <span class="value">${x.unitPrice === null ? '—' : unitMoney(x.unitPrice)}<div class="sub">/ ${u}</div></span>
+      </${manager ? 'button' : 'div'}></li>`)}</ul>`
+      : html`<p class="small muted" style="margin:12px 14px">${t('pack.none')}</p>`}</div>`;
+}
+
+/** "กระสอบ 15 กก." — or just "1 กก." for a single stock unit. */
+export function packLabel(x, unit) {
+  const size = `${number(x.packQty, 3)} ${unit}`;
+  return x.packName ? `${x.packName} ${size}` : size;
+}
+
+const PACK_NAMES = ['ถุง', 'แพ็ก', 'กระสอบ', 'ลัง', 'กล่อง', 'ขวด', 'แกลลอน', 'ถัง', 'กระป๋อง', 'โหล', 'แผง'];
+
+function packSheet(ctx, ing, item) {
+  const isNew = !item;
+  const boot = ctx.state.boot;
+  item = item || { supplierId: ing.supplierId || '', packQty: '', packPrice: '', minPacks: 1, preferred: !(ing.supplierItems || []).length };
+  const u = unitLabel(ing.unit);
+  const sups = boot.suppliers.filter((s) => s.active || s.id === item.supplierId);
+  openSheet({
+    title: isNew ? t('pack.newTitle', { name: ing.name }) : t('pack.editTitle', { name: ing.name }),
+    body: html`<form id="pf" novalidate>
+      <label class="field"><span class="label">${t('stock.supplier')}</span><select class="select" name="supplierId">${options(sups.map((s) => ({ value: s.id, label: s.name })), item.supplierId, { placeholder: t('common.choose') })}</select></label>
+      <div class="form-row">
+        <label class="field"><span class="label">${t('pack.name')}</span><input class="input" name="packName" list="pack-names" maxlength="40" value="${item.packName || ''}" placeholder="${t('pack.namePlaceholder')}"></label>
+        <label class="field"><span class="label">${t('pack.size')}</span><div class="input-group"><input class="input" name="packQty" type="number" inputmode="decimal" min="0" step="any" value="${item.packQty}"><span class="addon">${u}</span></div></label>
+      </div>
+      <datalist id="pack-names">${PACK_NAMES.map((n) => html`<option value="${n}">`)}</datalist>
+      <div class="form-row">
+        <label class="field"><span class="label">${t('pack.price')}</span><input class="input" name="packPrice" type="number" inputmode="decimal" min="0" step="any" value="${item.packPrice}"></label>
+        <label class="field"><span class="label">${t('pack.minLabel')}</span><input class="input" name="minPacks" type="number" inputmode="numeric" min="1" step="1" value="${item.minPacks || 1}"></label>
+      </div>
+      <label class="field"><span class="label">${t('pack.supplierCode')}</span><input class="input" name="supplierCode" maxlength="40" value="${item.supplierCode || ''}" placeholder="${t('common.optional')}"></label>
+      <p class="small" id="pack-preview" style="margin:-4px 2px 12px"></p>
+      <label class="check"><input type="checkbox" name="preferred" ${item.preferred ? raw('checked') : ''}> ${t('pack.setPreferred')}</label>
+    </form>`,
+    foot: html`${!isNew ? html`<button class="btn danger" id="remove">${t('pack.remove')}</button>` : ''}<button class="btn primary" id="save">${t('common.save')}</button>`,
+    onMount(el, close) {
+      const f = el.querySelector('#pf');
+      const preview = () => {
+        const q = Number(f.packQty.value), p = Number(f.packPrice.value);
+        el.querySelector('#pack-preview').textContent = q > 0 && f.packPrice.value !== '' ? t('pack.preview', { price: unitMoney(p / q), unit: u, cost: unitMoney(ing.costPerUnit) }) : '';
+      };
+      f.addEventListener('input', preview);
+      preview();
+      const done = async (msg) => { close(); toast(msg); await ctx.refresh(); itemSheet(ctx, ing.id); };
+      el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+        const v = Object.fromEntries(new FormData(f));
+        await call('supplierItems.save', { item: { ...v, preferred: f.preferred.checked, id: item.id, version: item.version, ingredientId: ing.id } });
+        await done(t('pack.saved'));
+      }, f));
+      const rm = el.querySelector('#remove');
+      if (rm) rm.addEventListener('click', () => busy(rm, async () => {
+        await call('supplierItems.remove', { id: item.id });
+        await done(t('pack.removed'));
+      }, f));
+    },
+  });
+}
+
 export async function itemSheet(ctx, id) {
   const i = ctx.state.boot.ingredients.find((x) => x.id === id);
   if (!i) return toast(t('stock.notFound'), 'bad');
@@ -309,7 +381,7 @@ export async function itemSheet(ctx, id) {
           ? `1 ${unitLabel(i.unit)} = ${number(1 / c.factor, 4)} ${unitLabel(c.unit)}`
           : `1 ${unitLabel(c.unit)} = ${number(c.factor, 4)} ${unitLabel(i.unit)}`}</b></li>`)}
       </ul>
-      ${isPrep ? prepCostCard(i) : ''}
+      ${isPrep ? prepCostCard(i) : packsCard(ctx, i)}
       <div style="margin-bottom:16px">${actionTiles(isPrep ? ['usage', 'waste', 'count'] : ['purchase', 'usage', 'waste', 'count'])}</div>
       ${showHistory ? html`<div class="section-head"><h2 style="font-size:15px">${t('stock.costHistory')}</h2></div>
         <div class="card" id="cost-history" style="margin-bottom:16px"><div class="skeleton" style="height:96px"></div></div>` : ''}
@@ -325,6 +397,10 @@ export async function itemSheet(ctx, id) {
       if (ed) ed.addEventListener('click', () => { close(); ingredientSheet(ctx, i); });
       const so = el.querySelector('[data-open-sop]');
       if (so) so.addEventListener('click', () => { close(); sopSheet(ctx, i.id); });
+      $$('[data-pack]', el).forEach((b) => b.addEventListener('click', () => {
+        close();
+        packSheet(ctx, i, i.supplierItems.find((x) => x.id === b.dataset.pack));
+      }));
     },
   });
   if (showHistory) loadCostHistory(sheet.el.querySelector('#cost-history'), i);
@@ -627,7 +703,6 @@ export function ingredientSheet(ctx, item, preset = {}) {
   const boot = ctx.state.boot;
   const s = boot.settings;
   const C = window.RestoCosting;
-  const cats = [...new Set([...list(s.ingredientCategories), ...boot.ingredients.map((i) => i.category).filter(Boolean)])];
   const units = [...new Set([...list(s.units), ...(item ? [item.unit] : [])])];
   const isNew = !item;
   item = item || { active: true, kind: preset.kind === 'prep' ? 'prep' : 'raw', yieldPct: 100, trackStock: true, conversions: [], prepLines: [] };
@@ -663,7 +738,7 @@ export function ingredientSheet(ctx, item, preset = {}) {
       </div>
       <div class="form-row">
         <label class="field"><span class="label">${t('stock.unit')}</span><select class="select" name="unit">${options(units.map((u) => ({ value: u, label: u })), item.unit || units[0])}</select></label>
-        <label class="field"><span class="label">${t('common.category')}</span><select class="select" name="category">${options(cats, item.category, { placeholder: t('common.none') })}</select></label>
+        ${categoryField(ctx, 'ingredient', item.categoryId)}
       </div>
       <div class="form-row">
         <label class="field" data-only="raw"><span class="label">${t('stock.costPerUnit')}</span><input class="input" name="costPerUnit" type="number" inputmode="decimal" min="0" step="any" value="${item.kind === 'prep' ? '' : item.costPerUnit ?? ''}" required></label>
@@ -723,6 +798,7 @@ export function ingredientSheet(ctx, item, preset = {}) {
     </form>`,
     foot: html`<button class="btn primary block" id="save">${isNew ? (kind === 'prep' ? t('stock.addPrep') : t('stock.addIngredient')) : t('common.saveChanges')}</button>`,
     onMount(el, close) {
+      wireCategoryField(ctx, el);
       $$('[data-allergen]', el).forEach((b) => b.addEventListener('click', () => b.setAttribute('aria-pressed', String(b.getAttribute('aria-pressed') !== 'true'))));
       const form = el.querySelector('#f');
       const stockUnit = () => unitLabel(form.unit.value);
@@ -825,7 +901,7 @@ export function ingredientSheet(ctx, item, preset = {}) {
         }).filter((c) => c.unit || c.factor !== '');
         const payload = {
           item: {
-            id: item.id, version: item.version, name: f.name.value, code: f.code.value, unit: f.unit.value, category: f.category.value,
+            id: item.id, version: item.version, name: f.name.value, code: f.code.value, unit: f.unit.value, categoryId: f.categoryId.value,
             costPerUnit: isPrep ? 0 : f.costPerUnit.value, minLevel: f.minLevel.value, parLevel: f.parLevel.value,
             supplierId: isPrep ? '' : f.supplierId.value, active: isNew ? true : f.active.checked,
             yieldPct: f.yieldPct.value.trim(), kind,

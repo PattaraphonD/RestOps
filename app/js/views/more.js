@@ -9,6 +9,7 @@ import { t, defaults } from '../i18n.js';
 import { renderLog as production } from './production.js';
 import { renderChannels as channels } from './channels.js';
 import { renderManual as sop } from './sop.js';
+import { renderCategories as categories, categoryField, wireCategoryField } from './categories.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -16,7 +17,7 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team, settings, account, production, channels, sop };
+  const pages = { expenses, suppliers, team, settings, account, production, channels, sop, categories };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -44,6 +45,7 @@ function index({ el, setTitle, state, can }) {
         ${item('#/more/suppliers', 'truck', t('more.suppliers'), t('more.nActive', { n: state.boot.suppliers.filter((s) => s.active).length }))}
         ${item('#/stock', 'box', t('more.ingredients'), t('more.ingredientsSub'))}
         ${item('#/more/channels', 'truck', t('channels.title'), t('more.nChannels', { n: (state.boot.channels || []).filter((c) => c.active).length }))}
+        ${item('#/more/categories', 'grid', t('cat.title'), t('cat.moreSub', { n: (state.boot.categories || []).filter((c) => c.active).length }))}
         ${can('owner') ? item('#/more/team', 'users', t('more.team'), t('more.nActiveUsers', { n: state.boot.users.filter((x) => x.active).length })) : ''}
         ${can('owner') ? item('#/more/settings', 'settings', t('more.settings'), t('more.settingsSub')) : ''}
       </ul></div></section>` : ''}
@@ -170,7 +172,7 @@ function expenseSheet(ctx) {
     title: t('exp.add'),
     body: html`<form id="f" novalidate>
       <label class="field"><span class="label">${t('exp.amount')}</span><input class="input" name="amount" type="number" inputmode="decimal" min="0" step="any" placeholder="0.00"></label>
-      <label class="field"><span class="label">${t('common.category')}</span><select class="select" name="category">${options(list(s.expenseCategories), '', { placeholder: t('common.choose') })}</select></label>
+      ${categoryField(ctx, 'expense', '', { required: true })}
       <label class="field"><span class="label">${t('exp.description')}</span><input class="input" name="description" maxlength="200" placeholder="${t('exp.descPlaceholder')}"></label>
       <div class="form-row">
         <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${today()}" max="${today()}"></label>
@@ -181,6 +183,7 @@ function expenseSheet(ctx) {
     foot: html`<button class="btn primary block" id="save">${t('exp.save')}</button>`,
     onMount(el, close) {
       const form = el.querySelector('#f');
+      wireCategoryField(ctx, el);
       el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
         const r = await call('expenses.add', Object.fromEntries(new FormData(form)));
         close();
@@ -205,7 +208,8 @@ function suppliers(ctx) {
     <button class="row" data-id="${s.id}" style="${s.active ? '' : 'opacity:.55'}">
       <span class="avatar brand">${initials(s.name)}</span>
       <span class="grow"><div class="title">${s.name}${s.active ? '' : ` (${t('common.inactive')})`}</div>
-        <div class="sub">${[s.contactName, s.phone].filter(Boolean).join(' · ') || t('sup.noContact')}</div></span>
+        <div class="sub">${[s.contactName, s.phone].filter(Boolean).join(' · ') || t('sup.noContact')}</div>
+        ${s.taxId ? html`<div class="sub">${t('sup.taxLine', { id: fmtTaxId(s.taxId), branch: branchLabel(s.branch) })}</div>` : ''}</span>
       <span class="value sub">${t('sup.nItems', { n: count(s.id) })}</span></button></li>`)}</ul>`
     : emptyState('truck', t('sup.noneTitle'), t('sup.noneText'))}</div>`);
   $$('[data-id]', el).forEach((b) => b.addEventListener('click', () => supplierSheet(ctx, rows.find((s) => s.id === b.dataset.id))));
@@ -230,6 +234,24 @@ function supplierSheet(ctx, item) {
         <label class="field"><span class="label">${t('sup.terms')}</span><input class="input" name="paymentTermsDays" type="number" inputmode="numeric" min="0" step="1" value="${item.paymentTermsDays || ''}" placeholder="0" ${ro}></label>
       </div>
       <p class="small muted" style="margin:-6px 2px 14px">${t('sup.termsHelp')}</p>
+      <div class="section-head" style="margin:6px 0 8px"><h2 style="font-size:15px">${t('sup.taxSection')}</h2></div>
+      <div class="form-row">
+        <label class="field"><span class="label">${t('sup.taxId')}</span><input class="input" name="taxId" inputmode="numeric" maxlength="17" value="${item.taxId ? fmtTaxId(item.taxId) : ''}" placeholder="0-0000-00000-00-0" ${ro}></label>
+        <label class="field"><span class="label">${t('sup.branch')}</span><input class="input" name="branch" inputmode="numeric" maxlength="5" value="${item.branch || ''}" placeholder="00000" ${ro}></label>
+      </div>
+      <p class="small muted" style="margin:-6px 2px 12px">${t('sup.branchHelp')}</p>
+      <label class="field"><span class="label">${t('sup.address')}</span><textarea class="textarea" name="address" maxlength="300" rows="2" ${ro}>${item.address || ''}</textarea></label>
+      <label class="check" style="margin-bottom:14px"><input type="checkbox" name="vatRegistered" ${item.vatRegistered ? raw('checked') : ''} ${canEdit ? '' : raw('disabled')}> ${t('sup.vatRegistered')}</label>
+      <div class="section-head" style="margin:6px 0 8px"><h2 style="font-size:15px">${t('sup.paySection')}</h2></div>
+      <div class="form-row">
+        <label class="field"><span class="label">${t('sup.bankName')}</span><input class="input" name="bankName" maxlength="60" list="banks" value="${item.bankName || ''}" ${ro}></label>
+        <label class="field"><span class="label">${t('sup.paymentMethod')}</span><select class="select" name="paymentMethod" ${canEdit ? '' : raw('disabled')}>${options(defaults('paymentMethods'), item.paymentMethod || '', { placeholder: t('common.none') })}</select></label>
+      </div>
+      <datalist id="banks">${BANKS.map((b) => html`<option value="${b}">`)}</datalist>
+      <div class="form-row">
+        <label class="field"><span class="label">${t('sup.bankAccountName')}</span><input class="input" name="bankAccountName" maxlength="120" value="${item.bankAccountName || ''}" ${ro}></label>
+        <label class="field"><span class="label">${t('sup.bankAccountNo')}</span><input class="input" name="bankAccountNo" inputmode="numeric" maxlength="20" value="${item.bankAccountNo || ''}" ${ro}></label>
+      </div>
       <label class="field"><span class="label">${t('sup.notes')}</span><textarea class="textarea" name="notes" maxlength="500" ${ro}>${item.notes || ''}</textarea></label>
       ${!isNew && canEdit ? html`<label class="check"><input type="checkbox" name="active" ${item.active ? raw('checked') : ''}> ${t('common.active')}</label>` : ''}
       ${!isNew && item.phone ? html`<a class="btn block" href="tel:${item.phone}" style="margin-top:8px">${t('sup.call', { phone: item.phone })}</a>` : ''}
@@ -241,6 +263,7 @@ function supplierSheet(ctx, item) {
       if (save) save.addEventListener('click', (e) => busy(e.currentTarget, async () => {
         const v = Object.fromEntries(new FormData(form));
         v.active = isNew ? true : form.active.checked;
+        v.vatRegistered = form.vatRegistered.checked;
         try { await call('suppliers.save', { item: { ...v, id: item.id, version: item.version } }); }
         catch (err) { if (err.code === 'CONFLICT') await ctx.refresh(); throw err; }
         close();
@@ -251,6 +274,16 @@ function supplierSheet(ctx, item) {
     },
   });
 }
+
+/** 0105512345678 → 0-1055-12345-67-8, the way Thai tax IDs are printed. */
+export function fmtTaxId(id) {
+  const d = String(id || '').replace(/\D/g, '');
+  return d.length === 13 ? `${d[0]}-${d.slice(1, 5)}-${d.slice(5, 10)}-${d.slice(10, 12)}-${d[12]}` : d;
+}
+export function branchLabel(b) {
+  return !b ? '' : b === '00000' ? t('sup.headOffice') : t('sup.branchNo', { n: b });
+}
+const BANKS = ['กสิกรไทย', 'ไทยพาณิชย์', 'กรุงเทพ', 'กรุงไทย', 'กรุงศรีอยุธยา', 'ทหารไทยธนชาต (ttb)', 'ออมสิน', 'ธ.ก.ส.', 'ยูโอบี', 'ซีไอเอ็มบี ไทย', 'เกียรตินาคินภัทร', 'แลนด์ แอนด์ เฮ้าส์'];
 
 /* ----------------------------------------------------------------- team */
 
@@ -310,7 +343,8 @@ function settings(ctx) {
   setTitle(t('more.settings'), { back: true });
   if (!can('owner')) { mount(el, emptyState('settings', t('more.ownersOnly'), t('settings.ownersOnlyText'))); return; }
   const s = state.boot.settings;
-  const LISTS = ['expenseCategories', 'ingredientCategories', 'menuCategories', 'units'];
+  // Categories have their own page (More → หมวดหมู่); units stay a simple list here.
+  const LISTS = ['units'];
   const autoRule = window.RestoPricing.effectiveRounding('', s.currency);
   const ROUNDING = ['', 'none', '1', '5', '10', '0.99', '9-ending'];
   const text = (name, hint) => html`<label class="field"><span class="label">${t(`settings.${name}`)}</span>

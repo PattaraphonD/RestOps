@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v8';
+const KEY = 'ro.demo.db.v9';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -94,10 +94,12 @@ const UNIT_CODE = { kg: 'kg', L: 'l', pcs: 'pcs', can: 'can' };
 
 // lead = delivery days, terms = payment terms in days. Produce is bought at the market (no orders).
 const SUPPLIERS = [
-  { key: 'meat', en: ['Siam Fresh Meats', 'Khun Somchai'], th: ['สยามเฟรชมีท', 'คุณสมชาย'], phone: '02-555-0101', email: 'orders@example.com', lead: 1, terms: 7 },
+  { key: 'meat', en: ['Siam Fresh Meats', 'Khun Somchai'], th: ['สยามเฟรชมีท', 'คุณสมชาย'], phone: '02-555-0101', email: 'orders@example.com', lead: 1, terms: 7,
+    tax: ['0105556012345', '00000', '88 ถนนพระราม 4 คลองเตย กรุงเทพฯ 10110', true, 'กสิกรไทย', '012-3-45678-9'] },
   { key: 'sea', en: ['Gulf Coast Seafood', 'Khun Nok'], th: ['อ่าวไทยซีฟู้ด', 'คุณนก'], phone: '02-555-0102', email: 'sales@example.com', lead: 1, terms: 7 },
   { key: 'veg', en: ['Talad Thai Produce', 'Khun Malee'], th: ['ตลาดไทยผักสด', 'คุณมาลี'], phone: '02-555-0103', email: '', lead: 0, terms: 0 },
-  { key: 'dry', en: ['Rungrueang Wholesale', 'Account desk'], th: ['ค้าส่งรุ่งเรือง', 'ฝ่ายบัญชี'], phone: '02-555-0104', email: 'b2b@example.com', lead: 2, terms: 30 },
+  { key: 'dry', en: ['Rungrueang Wholesale', 'Account desk'], th: ['ค้าส่งรุ่งเรือง', 'ฝ่ายบัญชี'], phone: '02-555-0104', email: 'b2b@example.com', lead: 2, terms: 30,
+    tax: ['0105561098765', '00002', '15/7 ถนนบางนา-ตราด บางพลี สมุทรปราการ 10540', true, 'ไทยพาณิชย์', '405-1-23456-7'] },
 ];
 
 // [key, English name, Thai name, category, unit, cost, supplier, yield %]
@@ -256,8 +258,10 @@ function seed(api, db, lang) {
   const sup = {};
   SUPPLIERS.forEach((s) => {
     const [name, contactName] = TH ? s.th : s.en;
+    const tax = s.tax ? { taxId: s.tax[0], branch: s.tax[1], address: s.tax[2], vatRegistered: s.tax[3], bankName: s.tax[4],
+      bankAccountName: name, bankAccountNo: s.tax[5], paymentMethod: 'โอนเงิน' } : {};
     sup[s.key] = as('suppliers.save', { item: { name, contactName, phone: s.phone, email: s.email,
-      leadTimeDays: s.lead, paymentTermsDays: s.terms } }).id;
+      leadTimeDays: s.lead, paymentTermsDays: s.terms, ...tax } }).id;
   });
 
   // Average daily usage (preps included) → sensible minimum levels and restock amounts.
@@ -277,6 +281,11 @@ function seed(api, db, lang) {
       units: (CONVERSIONS[key] || []).map((c) => ({ unit: unitName(c.unit), factor: c.factor })),
     }).id;
     unitOf[key] = unit;
+  });
+  // How the wholesaler sells some staples: rice by the 15 kg sack, oil by the 18 L tin, eggs by the tray of 30.
+  [['rice', 'dry', 'กระสอบ', 15, 540, 'RW-RICE15', 1, true], ['oil', 'dry', 'ปี๊บ', 18, 820, 'RW-OIL18', 1, true],
+    ['egg', 'dry', 'แผง', 30, 120, 'RW-EGG30', 2, true], ['rice', 'veg', 'ถุง', 5, 195, '', 1, false]].forEach(([k, s, packName, packQty, packPrice, code, minPacks, preferred]) => {
+    as('supplierItems.save', { item: { supplierId: sup[s], ingredientId: ing[k], packName, packQty, packPrice, supplierCode: code, minPacks, preferred } });
   });
   const lines = (recipe) => recipe.map(([k, q, u]) => ({ ingredientId: ing[k], qty: q, unit: unitName(u) }));
   PREPS.forEach(([key, en, th, batchQty, trackStock, shelfLifeDays, recipe]) => {

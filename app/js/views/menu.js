@@ -12,6 +12,7 @@ import { renderPricing, channelPriceEditor, selectChannel } from './pricing-view
 import { renderAnalysis } from './analysis.js';
 import { renderPromotions } from './promotions.js';
 import { sopSheet } from './sop.js';
+import { categoryField, wireCategoryField } from './categories.js';
 
 const ui = { tab: 'dishes', search: '', sort: 'name' };
 const VARIANCE_FLAG = 10;
@@ -149,7 +150,6 @@ function viewSheet(ctx, m, target) {
 function dishSheet(ctx, item) {
   const boot = ctx.state.boot;
   const target = Number(boot.settings.targetFoodCostPct) || 30;
-  const cats = [...new Set([...list(boot.settings.menuCategories), ...boot.menu.map((m) => m.category).filter(Boolean)])];
   const isNew = !item;
   item = item || { active: true, recipe: [], prices: {} };
   const chPrices = channelPriceEditor(boot, item);
@@ -166,7 +166,7 @@ function dishSheet(ctx, item) {
       <label class="field"><span class="label">${t('menu.dishName')}</span><input class="input" name="name" value="${item.name || ''}" maxlength="80"></label>
       <div class="form-row">
         <label class="field"><span class="label">${t('menu.sellingPrice')}</span><input class="input" name="price" type="number" inputmode="decimal" min="0" step="any" value="${item.price ?? ''}"></label>
-        <label class="field"><span class="label">${t('common.category')}</span><select class="select" name="category">${options(cats, item.category, { placeholder: t('common.none') })}</select></label>
+        ${categoryField(ctx, 'menu', item.categoryId)}
       </div>
       <div class="section-head" style="margin-top:6px"><h2 style="font-size:15px">${t('menu.recipe')}</h2></div>
       <p class="small muted" style="margin:-4px 2px 10px">${t('menu.recipeHelp')}</p>
@@ -186,6 +186,7 @@ function dishSheet(ctx, item) {
     foot: html`${isNew ? '' : html`<button class="btn" id="open-sop">${icon('clipboard')}${t('sop.short')}</button>`}
       <button class="btn primary block" id="save">${isNew ? t('menu.addDish') : t('menu.saveDish')}</button>`,
     onMount(el, close) {
+      wireCategoryField(ctx, el);
       const form = el.querySelector('#f');
       const openSop = el.querySelector('#open-sop');
       if (openSop) openSop.addEventListener('click', () => { close(); sopSheet(ctx, item.id); });
@@ -214,7 +215,7 @@ function dishSheet(ctx, item) {
         const recipe = editor.values().map((l) => ({ ingredientId: l.ingredientId, qty: l.qty, unit: l.unit, yieldPct: l.yieldPct }));
         try {
           await call('menu.save', {
-            item: { id: item.id, version: item.version, name: form.name.value, price: form.price.value, category: form.category.value,
+            item: { id: item.id, version: item.version, name: form.name.value, price: form.price.value, categoryId: form.categoryId.value,
               active: isNew ? true : form.active.checked },
             recipe,
             prices: chPrices.values(el),

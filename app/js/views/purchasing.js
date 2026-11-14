@@ -7,6 +7,7 @@ import {
 } from '../ui.js';
 import { t, defaults } from '../i18n.js';
 import { impactToast } from './stock.js';
+import { fmtTaxId, branchLabel } from './more.js';
 
 const ui = { tab: 'orders', poFilter: 'open', invFilter: 'review' };
 
@@ -163,6 +164,7 @@ async function poSheet(ctx, id) {
       <div class="card"><ul class="list">${po.lines.map((l) => html`<li class="row" style="min-height:56px">
         <span class="avatar ${l.qtyReceived >= l.qtyOrdered ? 'good' : l.qtyReceived > 0 ? 'warn' : ''}" style="width:32px;height:32px">${icon(l.qtyReceived >= l.qtyOrdered ? 'check' : 'box')}</span>
         <span class="grow"><div class="title">${l.name}</div>
+          ${l.packs ? html`<div class="sub"><b>${packOrdered(l)}</b></div>` : ''}
           <div class="sub">${t('po.receivedOf', { received: number(l.qtyReceived, 3), ordered: qty(l.qtyOrdered, l.unit) })} · ${money(l.unitPrice)}/${l.unit}</div></span>
         <span class="value">${money(l.lineTotal)}</span></li>`)}</ul></div>
       ${po.receipts.length ? html`<div class="section-head" style="margin-top:16px"><h2 style="font-size:15px">${t('po.deliveries')}</h2></div>
@@ -229,7 +231,7 @@ function poEditor(ctx, existing, preset) {
   };
   const lineHtml = (supplierId, l = {}) => {
     const ing = ings.find((i) => i.id === l.ingredientId);
-    return html`<div class="line-item" data-line>
+    return html`<div class="line-item" data-line data-pack="${l.supplierItemId || ''}" data-pack-qty="${l.packQty || ''}" data-pack-ing="${l.ingredientId || ''}" data-pack-sup="${supplierId || ''}" data-pack-unit="${l.unitPrice ?? ''}">
       <div style="display:flex;gap:8px;align-items:center">
         <select class="select" name="ingredientId" aria-label="${t('stock.ingredient')}">${ingOptions(supplierId, l.ingredientId)}</select>
         <button type="button" class="icon-btn" data-remove aria-label="${t('stock.removeItem')}">${icon('x')}</button></div>
@@ -237,6 +239,7 @@ function poEditor(ctx, existing, preset) {
         <label><span class="label small muted">${t('po.qtyToOrder')}</span><div class="input-group">
           <input class="input" name="qtyOrdered" type="number" inputmode="decimal" min="0" step="any" value="${l.qtyOrdered ?? ''}" placeholder="0">
           <span class="addon" data-unit>${ing ? ing.unit : t('stock.unit')}</span></div>
+          ${l.packs ? html`<span class="hint small" data-pack-hint>${packOrdered(l)}</span>` : ''}
           <span class="hint small muted" data-stock>${ing ? t('po.stockHint', { onHand: qty(ing.onHand, ing.unit), min: number(ing.minLevel, 3) }) : ''}</span></label>
         <label><span class="label small muted">${t('stock.costPerUnit')}</span>
           <input class="input" name="unitPrice" type="number" inputmode="decimal" min="0" step="any" value="${l.unitPrice ?? (ing ? Math.round(ing.costPerUnit * 100) / 100 : '')}"></label>
@@ -266,10 +269,19 @@ function poEditor(ctx, existing, preset) {
       const form = el.querySelector('#f');
       const host = el.querySelector('#lines');
       const sid = () => form.supplierId.value;
-      const lines = () => $$('[data-line]', host).map((w) => ({
-        el: w, ingredientId: w.querySelector('[name=ingredientId]').value,
-        qtyOrdered: w.querySelector('[name=qtyOrdered]').value, unitPrice: w.querySelector('[name=unitPrice]').value,
-      }));
+      const lines = () => $$('[data-line]', host).map((w) => {
+        const l = { el: w, ingredientId: w.querySelector('[name=ingredientId]').value,
+          qtyOrdered: w.querySelector('[name=qtyOrdered]').value, unitPrice: w.querySelector('[name=unitPrice]').value };
+        // A line ordered in packs stays in packs while it is still whole packs of the same item and supplier.
+        const pq = Number(w.dataset.packQty), packs = Number(l.qtyOrdered) / pq;
+        const samePrice = Math.abs(Number(l.unitPrice) - Number(w.dataset.packUnit)) < 0.005;
+        if (w.dataset.pack && samePrice && l.ingredientId === w.dataset.packIng && sid() === w.dataset.packSup && pq > 0 && packs > 0 && Math.abs(packs - Math.round(packs)) < 1e-9) {
+          l.supplierItemId = w.dataset.pack; l.packs = Math.round(packs);
+        }
+        const hint = w.querySelector('[data-pack-hint]');
+        if (hint) hint.hidden = !l.supplierItemId;
+        return l;
+      });
       const recalc = () => {
         el.querySelector('#total').textContent = money(lines().reduce((a, l) => a + (Number(l.qtyOrdered) || 0) * (Number(l.unitPrice) || 0), 0));
       };
@@ -321,7 +333,7 @@ function poEditor(ctx, existing, preset) {
         const payload = {
           item: { id: existing?.id, version: existing?.version, supplierId: sid(), orderDate: form.orderDate.value,
             expectedDate: form.expectedDate.value, note: form.note.value },
-          lines: lines().filter((l) => l.ingredientId || l.qtyOrdered).map(({ ingredientId, qtyOrdered, unitPrice }) => ({ ingredientId, qtyOrdered, unitPrice })),
+          lines: lines().filter((l) => l.ingredientId || l.qtyOrdered).map(({ ingredientId, qtyOrdered, unitPrice, supplierItemId, packs }) => (supplierItemId ? { ingredientId, supplierItemId, packs } : { ingredientId, qtyOrdered, unitPrice })),
           send,
         };
         let po;
@@ -345,7 +357,7 @@ function poEditor(ctx, existing, preset) {
 
 function poMessage(ctx, po) {
   const boot = ctx.state.boot;
-  const lines = po.lines.map((l, i) => `${i + 1}. ${l.name} — ${number(l.qtyOrdered, 3)} ${l.unit}`);
+  const lines = po.lines.map((l, i) => `${i + 1}. ${l.name} — ${l.packs ? packOrdered(l) : `${number(l.qtyOrdered, 3)} ${l.unit}`}`);
   return [
     `${boot.settings.restaurantName}`,
     `${t('po.msgTitle')} ${po.poNumber}`,
@@ -414,7 +426,7 @@ function printPo(ctx, po) {
   const sup = boot.suppliers.find((s) => s.id === po.supplierId) || {};
   const w = window.open('', '_blank');
   if (!w) return toast(t('po.popupBlocked'), 'bad');
-  const rows = po.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.name)}</td><td class="r">${esc(number(l.qtyOrdered, 3))} ${esc(l.unit)}</td>
+  const rows = po.lines.map((l, i) => `<tr><td>${i + 1}</td><td>${esc(l.name)}</td><td class="r">${l.packs ? esc(packOrdered(l)) : `${esc(number(l.qtyOrdered, 3))} ${esc(l.unit)}`}</td>
     <td class="r">${esc(money(l.unitPrice))}</td><td class="r">${esc(money(l.lineTotal))}</td></tr>`).join('');
   w.document.write(`<!doctype html><html lang="${document.documentElement.lang}"><head><meta charset="utf-8">
     <title>${esc(po.poNumber)}</title><style>
@@ -428,6 +440,7 @@ function printPo(ctx, po) {
       <div style="text-align:right"><b>${esc(po.poNumber)}</b><br>${esc(t('po.orderDate'))}: ${esc(fmtDate(po.orderDate, { day: 'numeric', month: 'long', year: 'numeric' }))}
       <br>${esc(t('po.expectedDate'))}: ${esc(fmtDate(po.expectedDate, { day: 'numeric', month: 'long', year: 'numeric' }))}</div></div>
     <div><span class="muted">${esc(t('po.msgTo'))}:</span> <b>${esc(po.supplierName)}</b>${sup.contactName ? ' · ' + esc(sup.contactName) : ''}${sup.phone ? ' · ' + esc(sup.phone) : ''}</div>
+    ${sup.taxId ? `<div class="muted">${esc(t('sup.taxId'))} ${esc(fmtTaxId(sup.taxId))} ${esc(branchLabel(sup.branch))}</div>` : ''}${sup.address ? `<div class="muted">${esc(sup.address)}</div>` : ''}
     <table><thead><tr><th>#</th><th>${esc(t('stock.item'))}</th><th class="r">${esc(t('stock.quantity'))}</th><th class="r">${esc(t('stock.unitCost'))}</th><th class="r">${esc(t('common.total'))}</th></tr></thead>
     <tbody>${rows}</tbody><tfoot><tr><td colspan="4" class="r">${esc(t('common.total'))}</td><td class="r">${esc(money(po.total))}</td></tr></tfoot></table>
     ${po.note ? `<p><span class="muted">${esc(t('common.note'))}:</span> ${esc(po.note)}</p>` : ''}
@@ -547,8 +560,11 @@ async function suggestSheet(ctx) {
           <input type="checkbox" checked data-item="${ii}" aria-label="${i.name}" style="width:22px;height:22px;margin-top:2px;accent-color:var(--brand)" ${g.supplierId ? '' : raw('disabled')}>
           <span class="grow"><div class="title">${i.name}</div>
             <div class="sub">${t('po.suggestLine', { onHand: qty(i.onHand, i.unit), min: number(i.minLevel, 3), onOrder: number(i.onOrder, 3) })}</div></span>
-          <span style="width:112px;flex:none"><div class="input-group"><input class="input" type="number" inputmode="decimal" min="0" step="any" value="${i.suggestedQty}" data-qty="${ii}" style="padding:8px 8px;min-height:40px" aria-label="${t('po.qtyToOrder')}">
-            <span class="addon" style="padding:0 6px;font-size:12px">${i.unit}</span></div></span></li>`)}</ul>
+          ${i.packs ? html`<span style="width:120px;flex:none"><div class="input-group"><input class="input" type="number" inputmode="numeric" min="${i.packs ? 1 : 0}" step="1" value="${i.packs}" data-qty="${ii}" style="padding:8px 8px;min-height:40px" aria-label="${t('po.qtyToOrder')}">
+              <span class="addon" style="padding:0 6px;font-size:12px">${i.packName || t('po.packWord')}</span></div>
+              <div class="small muted" style="text-align:right;margin-top:2px">${t('po.packEquals', { qty: number(i.packQty, 3), unit: i.unit, price: money(i.packPrice) })}</div></span>`
+            : html`<span style="width:112px;flex:none"><div class="input-group"><input class="input" type="number" inputmode="decimal" min="0" step="any" value="${i.suggestedQty}" data-qty="${ii}" style="padding:8px 8px;min-height:40px" aria-label="${t('po.qtyToOrder')}">
+              <span class="addon" style="padding:0 6px;font-size:12px">${i.unit}</span></div></span>`}</li>`)}</ul>
         <div style="padding:0 16px 16px">${g.supplierId
           ? html`<button class="btn primary block" data-create="${gi}">${icon('plus')}${t('po.createDraft')}</button>`
           : html`<p class="small muted" style="margin:0">${t('po.noSupplierHelp')}</p>`}</div>
@@ -560,7 +576,11 @@ async function suggestSheet(ctx) {
         const g = groups[gi];
         const card = el.querySelector(`[data-group="${gi}"]`);
         const lines = g.items.map((i, ii) => ({ i, ii })).filter(({ ii }) => card.querySelector(`[data-item="${ii}"]`).checked)
-          .map(({ i, ii }) => ({ ingredientId: i.ingredientId, qtyOrdered: card.querySelector(`[data-qty="${ii}"]`).value, unitPrice: i.unitPrice }))
+          .map(({ i, ii }) => {
+            const v = card.querySelector(`[data-qty="${ii}"]`).value;
+            return i.packs ? { ingredientId: i.ingredientId, supplierItemId: i.supplierItemId, packs: v, qtyOrdered: v }
+              : { ingredientId: i.ingredientId, qtyOrdered: v, unitPrice: i.unitPrice };
+          })
           .filter((l) => Number(l.qtyOrdered) > 0);
         const po = await call('po.save', { item: { supplierId: g.supplierId, orderDate: today() }, lines }, { requestId: `${newRequestId()}` });
         close();
@@ -854,4 +874,9 @@ function promptSheet({ title, message, label, confirm, danger, required }) {
       onClose() { if (!done) resolve(null); },
     });
   });
+}
+
+/** "3 กระสอบ (45 kg)" for a line ordered in packs. */
+function packOrdered(l) {
+  return `${number(l.packs, 0)} ${l.packName || t('po.packWord')} (${number(l.qtyOrdered, 3)} ${l.unit})`;
 }
