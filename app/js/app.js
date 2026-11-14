@@ -142,7 +142,6 @@ export async function render() {
 function renderLogin() {
   state.boot = null;
   document.title = `${t('login.signIn')} · ${t('app.name')}`;
-  const demo = session.mode === 'demo';
   mount(root, html`
     <div class="login">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
@@ -155,16 +154,14 @@ function renderLogin() {
         <label class="field"><span class="label">${t('login.password')}</span>
           <input class="input" name="password" type="password" autocomplete="current-password" required></label>
         <button class="btn primary block" type="submit">${t('login.signIn')}</button>
-        ${demo ? html`<p class="small muted" style="margin:10px 2px 0">${t('login.demoNote')}</p>` : ''}
       </form>
       <div class="divider">${t('login.or')}</div>
       <button class="btn block" id="demo-btn">${icon('chart')}<span>${t('login.demo')}</span></button>
-      <details class="server" ${!session.apiUrl && !demo ? raw('open') : ''}>
+      <details class="server" ${!session.apiUrl ? raw('open') : ''}>
         <summary>${t('login.server')}</summary>
         <label class="field" style="margin-top:8px"><span class="label">${t('login.serverUrl')}</span>
           <input class="input" id="api-url" inputmode="url" placeholder="https://…supabase.co/functions/v1/api" value="${session.apiUrl}">
           <span class="hint">${t('login.serverHint')}</span></label>
-        ${demo ? html`<button class="btn sm" type="button" id="use-server">${t('login.useServer')}</button>` : ''}
       </details>
     </div>`);
 
@@ -174,12 +171,13 @@ function renderLogin() {
     e.preventDefault();
     const btn = form.querySelector('[type=submit]');
     busy(btn, async () => {
-      if (session.mode !== 'demo') {
-        if (urlInput.value.trim() && !SERVER_URL.test(urlInput.value.trim())) {
-          throw new Error(t('login.badUrl'));
-        }
-        session.setApiUrl(urlInput.value);
+      // A username and password always sign in to the shop's server. The sample shop has its own button,
+      // so a phone that once tried the demo can't get stuck signing in to it.
+      if (urlInput.value.trim() && !SERVER_URL.test(urlInput.value.trim())) {
+        throw new Error(t('login.badUrl'));
       }
+      session.setApiUrl(urlInput.value);
+      session.setMode('remote');
       await login(form.username.value, form.password.value);
       location.hash = '#/home';
       render();
@@ -193,8 +191,6 @@ function renderLogin() {
     toast(t('login.demoWelcome'), 'info');
     render();
   }, form));
-  const useServer = $('#use-server');
-  if (useServer) useServer.addEventListener('click', () => { session.setMode('remote'); renderLogin(); });
   showFormError(form, null);
 }
 
