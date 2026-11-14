@@ -321,6 +321,8 @@ function settings(ctx) {
         <label class="field"><span class="label">${t('settings.currency')}</span><select class="select" name="currency">${options(['THB', 'USD', 'EUR', 'GBP', 'SGD', 'MYR', 'JPY', 'AUD', 'VND', 'IDR', 'PHP'], s.currency)}</select></label>
         <label class="field"><span class="label">${t('settings.targetFoodCostPct')}</span><input class="input" name="targetFoodCostPct" type="number" inputmode="decimal" value="${s.targetFoodCostPct}"></label>
       </div>
+      <label class="field"><span class="label">${t('settings.foodBudget')}</span><input class="input" name="foodBudget" type="number" inputmode="decimal" min="0" step="any" value="${s.foodBudget || ''}" placeholder="${t('common.optional')}">
+        <span class="hint">${t('settings.foodBudgetHelp')}</span></label>
       <label class="field"><span class="label">${t('settings.costMethod')}</span><select class="select" name="costMethod">${options([{ value: 'average', label: t('settings.average') }, { value: 'last', label: t('settings.last') }], s.costMethod)}</select></label>
       <div class="form-row">
         <label class="field"><span class="label">${t('settings.vatRate')}</span><input class="input" name="vatRate" type="number" inputmode="decimal" min="0" step="any" value="${s.vatRate}"></label>

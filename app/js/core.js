@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '1.7.1';
+  var VERSION = '2.0.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -29,7 +29,9 @@ var RestoCore = (function () {
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'parLevel',
       'yieldPct', 'kind', 'batchQty', 'trackStock', 'shelfLifeDays',
       // SOP fields; allergens = csv of codes (only set on ingredients, derived for dishes and preps)
-      'portionNote', 'holdingNote', 'equipment', 'prepMinutes', 'allergens', 'photoUrl'],
+      'portionNote', 'holdingNote', 'equipment', 'prepMinutes', 'allergens', 'photoUrl',
+      // optional stock code (SKU), unique among active items
+      'code'],
     Purchases: ['id', 'date', 'supplierId', 'ingredientId', 'qty', 'unitCost', 'total', 'invoiceRef',
       'note', 'voided', 'createdAt', 'createdBy', 'poId', 'poLineId'],
     StockMovements: ['id', 'date', 'ingredientId', 'type', 'qty', 'unitCost', 'value', 'reason', 'refId',
@@ -76,7 +78,7 @@ var RestoCore = (function () {
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -94,7 +96,8 @@ var RestoCore = (function () {
     ingredientCategories: 'Meat & Seafood, Produce, Dairy & Eggs, Dry goods, Sauces & Condiments, Beverages, Packaging',
     menuCategories: 'Mains, Noodles & Rice, Starters, Desserts, Drinks',
     units: 'kg, g, L, ml, pcs, pack, bottle, can',
-    priceRounding: ''                 // '' = by currency (THB -> 5); else none | 1 | 5 | 10 | 0.99 | 9-ending
+    priceRounding: '',                // '' = by currency (THB -> 5); else none | 1 | 5 | 10 | 0.99 | 9-ending
+    foodBudget: ''                    // monthly ingredient budget; '' = expected revenue × target food cost %
   };
   var CHANNEL_TYPES = ['dineIn', 'takeaway', 'delivery', 'other'];
 
@@ -271,7 +274,7 @@ var RestoCore = (function () {
     'Due date': 'วันครบกำหนด', 'VAT': 'ภาษีมูลค่าเพิ่ม', 'Invoice total': 'ยอดรวมใบแจ้งหนี้', 'Payment date': 'วันที่จ่าย',
     'Purchase order': 'ใบสั่งซื้อ', 'Invoice': 'ใบแจ้งหนี้', 'Order line': 'รายการสั่งซื้อ',
     'Batches': 'จำนวนรอบผลิต', 'Batch quantity': 'ปริมาณต่อรอบผลิต', 'Conversion factor': 'ตัวคูณการแปลงหน่วย',
-    'Conversion unit': 'หน่วยที่แปลง', 'Shelf life (days)': 'อายุการเก็บ (วัน)', 'Quantity made': 'จำนวนที่ผลิตได้', 'Production run': 'การผลิต',
+    'Conversion unit': 'หน่วยที่แปลง', 'Shelf life (days)': 'อายุการเก็บ (วัน)', 'Ingredient code': 'รหัสวัตถุดิบ', 'Monthly ingredient budget': 'งบวัตถุดิบต่อเดือน', 'Quantity made': 'จำนวนที่ผลิตได้', 'Production run': 'การผลิต',
     'Packaging cost': 'ค่าบรรจุภัณฑ์', 'Promotion': 'โปรโมชัน', 'Promotion name': 'ชื่อโปรโมชัน', 'Promotion price': 'ราคาโปรโมชัน',
     'Start date': 'วันเริ่ม', 'End date': 'วันสิ้นสุด', 'Prep': 'ของเตรียม', 'Prep time (minutes)': 'เวลาเตรียม (นาที)', 'From': 'ตั้งแต่วันที่', 'To': 'ถึงวันที่', 'Sales channel': 'ช่องทางการขาย', 'Commission %': 'ค่าคอมมิชชัน %',
     'cancelled': 'ถูกยกเลิก', 'closed': 'ปิดแล้ว', 'received': 'รับครบแล้ว', 'draft': 'เป็นฉบับร่าง',
@@ -334,11 +337,13 @@ var RestoCore = (function () {
     [/^There must always be at least one active owner\.$/, 'ต้องมีเจ้าของร้านที่ใช้งานอยู่อย่างน้อย 1 คนเสมอ'],
     [/^Set a starting password for the new user\.$/, 'กรุณาตั้งรหัสผ่านเริ่มต้นให้ผู้ใช้ใหม่'],
     [/^Unknown cost method\.$/, 'ไม่รู้จักวิธีคิดต้นทุน'],
+    [/^Unknown period\.$/,'ไม่รู้จักช่วงเวลานี้'],
     [/^Unknown action: ([\s\S]*)$/, 'ไม่รู้จักคำสั่ง: $1'],
     [/^Your role \((\w+)\) cannot do this\. Ask a (\w+)\.$/, function (m) {
       return 'บทบาทของคุณ (' + thLabel(m[1]) + ') ทำรายการนี้ไม่ได้ กรุณาให้' + thLabel(m[2]) + 'ดำเนินการ'; }],
     [/^The system is busy/, 'ระบบกำลังบันทึกข้อมูลของผู้ใช้อื่นอยู่ กรุณาลองอีกครั้ง'],
     [/^Something went wrong on the server: ([\s\S]*)$/, 'เกิดข้อผิดพลาดที่เซิร์ฟเวอร์: $1'],
+    [/^The server couldn't finish this\. Please try again\.$/, 'เซิร์ฟเวอร์ทำรายการนี้ไม่สำเร็จ กรุณาลองอีกครั้ง'],
     [/^([\s\S]+) must be a whole number\.$/, function (m) { return thLabel(m[1]) + ' ต้องเป็นจำนวนเต็ม'; }],
     [/^Only draft orders can be edited\.$/, 'แก้ไขได้เฉพาะใบสั่งซื้อที่เป็นฉบับร่าง'],
     [/^Choose a supplier\.$/, 'กรุณาเลือกซัพพลายเออร์'],
@@ -572,7 +577,7 @@ var RestoCore = (function () {
         var untracked = cr.kind === 'prep' && cr.trackStock === false;
         var status = untracked ? 'ok' : qty <= 0 ? 'out' : qty <= min ? 'low' : 'ok';
         return {
-          id: i.id, name: i.name, category: i.category, unit: i.unit,
+          id: i.id, name: i.name, code: trim(i.code), category: i.category, unit: i.unit,
           costPerUnit: round(num(i.costPerUnit), 4), minLevel: min, parLevel: num(i.parLevel),
           onOrder: round(onOrder[i.id] || 0, 3),
           supplierId: i.supplierId || '', supplierName: suppliers[i.supplierId] ? suppliers[i.supplierId].name : '',
@@ -953,6 +958,7 @@ var RestoCore = (function () {
         yieldPct: yieldPct, kind: kind, batchQty: '',
         trackStock: d.trackStock === undefined || trim(d.trackStock) === '' ? true : bool(d.trackStock),
         shelfLifeDays: optInt(d.shelfLifeDays, 'Shelf life (days)') };
+      if (d.code !== undefined) data.code = optStr(d.code, 30);
       if (d.allergens !== undefined) {
         var codes = (d.allergens || []).map(trim).filter(Boolean);
         codes.forEach(function (a) { if (RestoCosting.ALLERGENS.indexOf(a) < 0) fail('VALIDATION', 'Unknown allergen.'); });
@@ -962,6 +968,7 @@ var RestoCore = (function () {
       else data.trackStock = true;
       if (data.supplierId) findOrFail('Suppliers', data.supplierId, 'Supplier');
       if (data.active) assertUnique('Ingredients', 'name', data.name, data.id, 'Ingredient');
+      if (data.active && data.code) assertUnique('Ingredients', 'code', data.code, data.id, 'Ingredient code');
 
       var units = (p.units || []).map(function (u) {
         var unit = reqStr(u.unit, 'Conversion unit', 20);
@@ -1595,6 +1602,47 @@ var RestoCore = (function () {
       return row;
     } };
 
+    // This month's ingredient budget: expected revenue × target food cost % (or the owner's figure),
+    // against purchases so far. Expected revenue = month to date + 28-day daily average × days left.
+    A['stock.budget'] = { role: 'manager', write: false, fn: function (p) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var month = today.slice(0, 7), first = month + '-01';
+      var y = Number(today.slice(0, 4)), m = Number(today.slice(5, 7));
+      var daysInMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+      var dayOfMonth = Number(today.slice(8, 10));
+      var sales = live(db.read('Sales')).filter(function (r) { return r.date <= today; });
+      var mtd = sum(sales.filter(function (r) { return r.date >= first; }), function (r) { return num(r.total); });
+      var from28 = addDays(today, -27);
+      var firstSale = sales.reduce(function (a, r) { return !a || r.date < a ? r.date : a; }, '');
+      var start = firstSale && firstSale > from28 ? firstSale : from28;
+      var days = firstSale ? Math.round((Date.parse(today) - Date.parse(start)) / 864e5) + 1 : 0;
+      var last = sum(sales.filter(function (r) { return r.date >= start; }), function (r) { return num(r.total); });
+      var avgDaily = days > 0 ? round(last / days) : 0;
+      var forecast = round(mtd + avgDaily * (daysInMonth - dayOfMonth));
+      var s = settings();
+      var targetPct = num(s.targetFoodCostPct) || 30;
+      var set = num(s.foodBudget) > 0 ? num(s.foodBudget) : null;
+      var budget = set !== null ? set : round(forecast * targetPct / 100);
+      var spent = round(sum(live(db.read('Purchases')).filter(function (r) { return r.date >= first && r.date <= today; }),
+        function (r) { return num(r.total); }));
+      var usedPct = budget > 0 ? round(spent / budget * 100, 1) : null;
+      var elapsedPct = round(dayOfMonth / daysInMonth * 100, 1);
+      var pace = budget > 0 && spent > budget ? 'over' : usedPct !== null && usedPct > elapsedPct + 10 ? 'ahead' : 'ok';
+      return { month: month, dayOfMonth: dayOfMonth, daysInMonth: daysInMonth, mtdRevenue: round(mtd), avgDaily: avgDaily,
+        forecastRevenue: forecast, targetPct: targetPct, source: set !== null ? 'set' : 'auto', budget: budget,
+        spent: spent, remaining: round(budget - spent), usedPct: usedPct, elapsedPct: elapsedPct, pace: pace };
+    } };
+
+    // Running costs per dish: the last 30 days of expenses ÷ dishes sold in the same days.
+    A['costs.overhead'] = { role: 'manager', write: false, fn: function (p) {
+      var to = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var from = addDays(to, -29);
+      var inRange = function (r) { return r.date >= from && r.date <= to; };
+      var expenses = round(sum(live(db.read('Expenses')).filter(inRange), function (r) { return num(r.amount); }));
+      var dishes = sum(live(db.read('Sales')).filter(inRange), function (r) { return num(r.qty); });
+      return { from: from, to: to, expenses: expenses, dishes: dishes, perDish: dishes > 0 ? round(expenses / dishes) : null };
+    } };
+
     A['day.status'] = { role: 'staff', write: false, fn: function (p) {
       var date = reqDate(p.date);
       var r = db.read('DayCloses').filter(function (x) { return x.date === date; })[0];
@@ -2021,6 +2069,82 @@ var RestoCore = (function () {
         payables: payablesSummary(today),
         purchasing: purchasingCounts(today)
       };
+    } };
+
+    // Day or week summary for Home. A week runs Monday–Sunday; the current one counts up to today.
+    // Compared like for like: a day with the same weekday last week, a week with the same days of last week.
+    A['reports.period'] = { role: 'manager', write: false, fn: function (p, user) {
+      var channels = ensureChannels(user);
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var period = trim(p.period);
+      if (period !== 'day' && period !== 'week') fail('VALIDATION', 'Unknown period.');
+      var date = p.date ? reqDate(p.date) : today;
+      if (date > today) date = today;
+      var from = date, to = date;
+      if (period === 'week') {
+        var dow = new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10))).getUTCDay();
+        from = addDays(date, -((dow + 6) % 7));
+        to = addDays(from, 6);
+      }
+      var toCap = to > today ? today : to;
+      var sales = live(db.read('Sales')), purchases = live(db.read('Purchases'));
+      var expenses = live(db.read('Expenses')), moves = live(db.read('StockMovements'));
+      var totals = periodTotals(from, toCap, sales, purchases, expenses, moves);
+      var previous = periodTotals(addDays(from, -7), addDays(toCap, -7), sales, purchases, expenses, moves);
+      previous.from = addDays(from, -7);
+      previous.to = addDays(toCap, -7);
+      var closes = {};
+      db.read('DayCloses').forEach(function (r) { closes[r.date] = r; });
+
+      var days = [];
+      if (period === 'week') {
+        for (var d = from; d <= to; d = addDays(d, 1)) {
+          var dt = periodTotals(d, d, sales, purchases, expenses, moves);
+          var pv = sum(sales.filter(function (r) { return r.date === addDays(d, -7); }), function (r) { return num(r.total); });
+          days.push({ date: d, future: d > today, revenue: dt.revenue, dishes: dt.orders, foodCostPct: dt.foodCostPct,
+            grossProfit: round(dt.revenue - dt.cogs - dt.commissions - dt.wasteAndVariance), prevRevenue: round(pv), closed: !!closes[d] });
+        }
+      }
+      var best = days.filter(function (x) { return !x.future && x.revenue > 0; })
+        .reduce(function (a, x) { return !a || x.revenue > a.revenue ? x : a; }, null);
+
+      var inPeriod = sales.filter(function (r) { return inRange(r.date, from, toCap); });
+      var byItem = {};
+      inPeriod.forEach(function (r) {
+        var b = byItem[r.menuItemId] = byItem[r.menuItemId] || { menuItemId: r.menuItemId, name: r.itemName, qty: 0, revenue: 0, cost: 0 };
+        b.qty += num(r.qty); b.revenue += num(r.total); b.cost += num(r.costTotal);
+      });
+      var topItems = Object.keys(byItem).map(function (k) {
+        var b = byItem[k];
+        return { menuItemId: b.menuItemId, name: b.name, qty: b.qty, revenue: round(b.revenue),
+          foodCostPct: b.revenue > 0 ? round(b.cost / b.revenue * 100, 1) : null };
+      }).sort(function (a, b) { return b.qty - a.qty || b.revenue - a.revenue; }).slice(0, 8);
+
+      var expCat = {};
+      expenses.filter(function (r) { return inRange(r.date, from, toCap); }).forEach(function (r) {
+        expCat[r.category] = (expCat[r.category] || 0) + num(r.amount);
+      });
+      var expenseCategories = Object.keys(expCat).map(function (k) { return { category: k, amount: round(expCat[k]) }; })
+        .sort(function (a, b) { return b.amount - a.amount; });
+
+      var waste = [], close = null;
+      if (period === 'day') {
+        var ings = byId(db.read('Ingredients')), w = {};
+        moves.filter(function (r) { return r.date === date && r.type === 'waste'; }).forEach(function (r) {
+          var x = w[r.ingredientId] = w[r.ingredientId] || { ingredientId: r.ingredientId,
+            name: ings[r.ingredientId] ? ings[r.ingredientId].name : '?', unit: ings[r.ingredientId] ? ings[r.ingredientId].unit : '', qty: 0, value: 0 };
+          x.qty += -num(r.qty); x.value += -num(r.value);
+        });
+        waste = Object.keys(w).map(function (k) { var x = w[k]; x.qty = round(x.qty, 3); x.value = round(x.value); return x; })
+          .sort(function (a, b) { return b.value - a.value; }).slice(0, 8);
+        var c = closes[date];
+        close = c ? { closedBy: c.closedBy, closedAt: c.closedAt, note: c.note || '', salesTotal: num(c.salesTotal),
+          wasteValue: num(c.wasteValue), countLines: num(c.countLines) } : null;
+      }
+      return { period: period, date: date, from: from, to: to, toCap: toCap, today: today, partial: toCap < to,
+        totals: totals, previous: previous, days: days, best: best ? { date: best.date, revenue: best.revenue } : null,
+        topItems: topItems, byChannel: salesByChannel(inPeriod, channels), expenseCategories: expenseCategories,
+        waste: waste, close: close };
     } };
 
     /* ================================================================ Purchasing */
@@ -2516,6 +2640,7 @@ var RestoCore = (function () {
         var v = optStr(values[k], 1000);
         if (k === 'targetFoodCostPct') v = String(reqNum(v, 'Target food cost %', { min: 1 }));
         if (k === 'vatRate') v = String(reqNum(v, 'VAT rate', { min: 0 }));
+        if (k === 'foodBudget' && trim(v) !== '') v = String(round(reqNum(v, 'Monthly ingredient budget', { min: 0 })));
         if (k === 'priceTolerancePct') v = String(reqNum(v, 'Price tolerance %', { min: 0 }));
         if (k === 'costMethod' && ['average', 'last'].indexOf(v) < 0) fail('VALIDATION', 'Unknown cost method.');
         if (k === 'priceRounding' && v !== '' && RestoPricing.ROUNDING_RULES.indexOf(v) < 0) fail('VALIDATION', 'Unknown price rounding.');
@@ -2594,7 +2719,13 @@ var RestoCore = (function () {
       handle: handle,
       /** Run an action as a given user without a session (setup and demo seeding only). */
       runAs: function (user, action, payload) { return execute(action, payload, user, {}); },
-      initialize: initialize
+      initialize: initialize,
+      /** Whether an action saves data, and the lowest role allowed (used by the Supabase server). */
+      actionInfo: function (action) {
+        if (action === 'auth.login') return { write: true, role: 'staff' };
+        var def = A[action];
+        return def ? { write: !!def.write, role: def.role } : null;
+      }
     };
   }
 

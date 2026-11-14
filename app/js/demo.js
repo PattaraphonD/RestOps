@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v7';
+const KEY = 'ro.demo.db.v8';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -264,13 +264,15 @@ function seed(api, db, lang) {
   const { usage, prepDaily, takes, book: plan } = planUsage();
   const isCount = (unitKey) => unitKey === 'pcs' || unitKey === 'can';
   const unitName = (u) => (UNIT[u] === undefined ? u : units[UNIT[u]]);
-  const ing = {}, unitOf = {};
+  const ing = {}, unitOf = {}, codeN = {};
+  // Stock codes by category, e.g. ME-001 (meat), PR-002 (produce).
+  const codeFor = (cat) => { const p = String(cat).slice(0, 2).toUpperCase(); codeN[p] = (codeN[p] || 0) + 1; return `${p}-${String(codeN[p]).padStart(3, '0')}`; };
   INGREDIENTS.forEach(([key, en, th, cat, unit, cost, s, y]) => {
     const use = usage[key] || 0;
     const minLevel = !use ? 0 : isCount(unit) ? Math.ceil(use * 1.5) : Math.max(0.3, round(use * 1.5, 1));
     const parLevel = !use ? '' : isCount(unit) ? Math.ceil(use * 6 / 12) * 12 : Math.ceil(use * 6 * 2) / 2;
     ing[key] = as('ingredients.save', {
-      item: { name: tx(en, th), category: icats[ICAT[cat]], unit: units[UNIT[unit]], costPerUnit: cost,
+      item: { name: tx(en, th), code: codeFor(cat), category: icats[ICAT[cat]], unit: units[UNIT[unit]], costPerUnit: cost,
         minLevel, parLevel, supplierId: s ? sup[s] : '', yieldPct: y || '', allergens: ALLERGENS[key] || [] },
       units: (CONVERSIONS[key] || []).map((c) => ({ unit: unitName(c.unit), factor: c.factor })),
     }).id;

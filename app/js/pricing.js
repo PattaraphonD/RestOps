@@ -223,6 +223,51 @@ var RestoPricing = (function () {
     };
   }
 
+  /**
+   * Profit board: every dish on every channel.
+   * o = { dishes: [{ id, price, foodCost, prices: { channelId: price }, hasRecipe }],
+   *       channels: [{ id, commissionPct, packagingCost }], targetPct, rounding, overheadPerDish (null = unknown) }
+   * cm = net after commission − food − packaging; realProfit = cm − running cost per dish.
+   * suggested = the higher of the target price and the break-even price, only when above the current price.
+   */
+  function profitBoard(o) {
+    var target = num(o.targetPct), oh = o.overheadPerDish === null || o.overheadPerDish === undefined ? null : num(o.overheadPerDish);
+    var counts = { all: 0, loss: 0, overTarget: 0, noRecipe: 0 };
+    var rows = (o.dishes || []).map(function (d) {
+      var food = num(d.foodCost), base = num(d.price);
+      var row = { id: d.id, price: base, foodCost: food, noRecipe: !d.hasRecipe || !(food > 0),
+        foodCostPct: base > 0 && food > 0 ? round(food / base * 100, 1) : null, overTarget: false,
+        cells: {}, loss: false, lossChannels: [], worstReal: null };
+      counts.all++;
+      if (row.noRecipe) { counts.noRecipe++; return row; }
+      row.overTarget = row.foodCostPct !== null && row.foodCostPct > target + EPS;
+      (o.channels || []).forEach(function (c) {
+        var own = d.prices && d.prices[c.id] !== undefined && d.prices[c.id] !== null && d.prices[c.id] !== '';
+        var price = own ? num(d.prices[c.id]) : base;
+        var e = channelEconomics({ price: price, foodCost: food, packaging: c.packagingCost, commissionPct: c.commissionPct,
+          targetPct: target, rounding: o.rounding });
+        var real = oh === null ? null : round(e.cm - oh);
+        var keep = 1 - num(c.commissionPct) / 100;
+        var breakEven = oh !== null && keep > 0 ? roundPrice((food + num(c.packagingCost) + oh) / keep, o.rounding) : null;
+        // Missing the target → target price; losing money → break-even price; both → the higher one.
+        var wanted = !e.meetsTarget && e.suggested !== null ? e.suggested : null;
+        if (breakEven !== null && (wanted !== null || real < -EPS)) wanted = Math.max(wanted || 0, breakEven);
+        row.cells[c.id] = { price: price, own: !!own, netRevenue: e.netRevenue, cm: e.cm, realProfit: real,
+          foodCostPctNet: e.foodCostPctNet, meetsTarget: e.meetsTarget,
+          suggested: wanted !== null && wanted > price + EPS ? wanted : null };
+        if (real !== null) {
+          if (row.worstReal === null || real < row.worstReal) row.worstReal = real;
+          if (real < -EPS) row.lossChannels.push(c.id);
+        }
+      });
+      row.loss = row.lossChannels.length > 0;
+      if (row.loss) counts.loss++;
+      if (row.overTarget) counts.overTarget++;
+      return row;
+    });
+    return { rows: rows, counts: counts, overheadPerDish: oh };
+  }
+
   function merge(a, b) {
     var out = {}, k;
     for (k in a) out[k] = a[k];
@@ -241,7 +286,8 @@ var RestoPricing = (function () {
     promoPrice: promoPrice,
     bundleSplit: bundleSplit,
     promoEconomics: promoEconomics,
-    counterOffer: counterOffer
+    counterOffer: counterOffer,
+    profitBoard: profitBoard
   };
 })();
 

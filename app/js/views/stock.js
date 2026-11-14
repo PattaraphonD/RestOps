@@ -1,7 +1,7 @@
 // Stock: levels, low-stock alerts, purchases (stock in), usage, waste, counts, history.
 import { call } from '../api.js';
 import {
-  html, raw, mount, icon, money, unitMoney, number, qty, pct, today, relDay, timeOf, $, $$, openSheet, confirmSheet,
+  html, raw, mount, icon, money, unitMoney, number, qty, pct, today, fmtMonth, relDay, timeOf, $, $$, openSheet, confirmSheet,
   toast, busy, options, emptyState, statusPill, foodCostPill, initials, unitLabel,
   recentIds, pushRecent,
 } from '../ui.js';
@@ -107,35 +107,54 @@ export async function render(ctx) {
 /* ---------------------------------------------------------------- levels */
 
 function renderLevels(ctx) {
-  const { state } = ctx;
+  const { state, can } = ctx;
   const all = state.boot.ingredients.filter((i) => i.active);
-  const attention = all.filter((i) => i.status !== 'ok');
+  // To order: bought items low or out (same rule as Home). To make: preps low or out.
+  const attention = all.filter((i) => i.status !== 'ok' && i.kind !== 'prep');
+  const toMake = all.filter((i) => i.status !== 'ok' && i.kind === 'prep');
   const preps = all.filter((i) => i.kind === 'prep');
   if (ui.filter === 'preps' && !preps.length) ui.filter = 'all';
+  if (ui.filter === 'make' && !toMake.length) ui.filter = 'all';
   const cats = [...new Set(all.map((i) => i.category).filter(Boolean))].sort();
+  const stockValue = all.reduce((a, i) => a + Math.max(0, i.value), 0);
+  const inStock = all.filter((i) => i.onHand > 0).length;
+  const manager = can('manager');
   const tab = $('#tab');
   mount(tab, html`
-    <div class="search">${icon('search')}<input class="input" type="search" placeholder="${t('stock.search')}" value="${ui.search}" aria-label="${t('stock.search')}"></div>
+    <div class="stock-overview${manager ? ' with-budget' : ''}">
+      ${manager ? html`<div class="card pad budget-card" id="budget"><div class="skeleton" style="height:120px"></div></div>` : ''}
+      <div class="stock-side">
+        ${manager ? html`<div class="card pad mini-kpi" id="forecast"><div class="label">${icon('chart')}${t('budget.forecast')}</div><div class="val">—</div></div>` : ''}
+        <div class="card pad mini-kpi"><div class="label">${icon('box')}${t('budget.stockValue')}</div>
+          <div class="val">${money(stockValue, { cents: false })}</div><div class="sub">${t('budget.stockItems', { n: inStock })}</div></div>
+      </div>
+    </div>
+    <div class="search">${icon('search')}<input class="input" type="search" placeholder="${t('stock.searchCode')}" value="${ui.search}" aria-label="${t('stock.searchCode')}"></div>
     <div class="chips" role="group" aria-label="${t('common.filter')}">
-      <button class="chip" data-f="all" aria-pressed="${ui.filter === 'all'}">${t('common.all')}<span class="count">${all.length}</span></button>
-      <button class="chip" data-f="attention" aria-pressed="${ui.filter === 'attention'}">${t('stock.needsRestock')}<span class="count">${attention.length}</span></button>
+      <button class="chip" data-f="attention" aria-pressed="${ui.filter === 'attention'}">${icon('clipboard')}${t('stock.toOrder')}<span class="count${attention.length ? ' hot' : ''}">${attention.length}</span></button>
+      ${toMake.length ? html`<button class="chip" data-f="make" aria-pressed="${ui.filter === 'make'}">${t('stock.toMake')}<span class="count hot">${toMake.length}</span></button>` : ''}
+      <button class="chip" data-f="all" aria-pressed="${ui.filter === 'all'}">${icon('box')}${t('common.all')}<span class="count">${all.length}</span></button>
       ${preps.length ? html`<button class="chip" data-f="preps" aria-pressed="${ui.filter === 'preps'}">${t('stock.filterPreps')}<span class="count">${preps.length}</span></button>` : ''}
       ${cats.map((c) => html`<button class="chip" data-f="cat:${c}" aria-pressed="${ui.filter === 'cat:' + c}">${c}</button>`)}
     </div>
-    <div class="card" id="levels"></div>
-    <p class="small muted" style="margin:10px 4px">${t('stock.valueNote', { amount: money(all.reduce((a, i) => a + Math.max(0, i.value), 0)) })}</p>`);
+    <div id="order-bar"></div>
+    <div class="card" id="levels"></div>`);
+  if (manager) drawBudget(tab);
   const draw = () => {
     const q = ui.search.trim().toLowerCase();
     let rows = all;
     if (ui.filter === 'attention') rows = attention;
+    else if (ui.filter === 'make') rows = toMake;
     else if (ui.filter === 'preps') rows = preps;
     else if (ui.filter.startsWith('cat:')) rows = rows.filter((i) => i.category === ui.filter.slice(4));
-    if (q) rows = rows.filter((i) => i.name.toLowerCase().includes(q) || (i.supplierName || '').toLowerCase().includes(q));
+    if (q) rows = rows.filter((i) => i.name.toLowerCase().includes(q) || (i.code || '').toLowerCase().includes(q) || (i.supplierName || '').toLowerCase().includes(q));
+    mount($('#order-bar'), manager && ui.filter === 'attention' && attention.length
+      ? html`<a class="btn primary block" href="#/orders/suggest" style="margin-bottom:12px">${icon('truck')}${t('stock.makePo', { n: attention.length })}</a>` : '');
     rows = rows.slice().sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name));
     mount($('#levels'), rows.length ? html`<ul class="list">${rows.map((i) => html`<li>
       <button class="row" data-id="${i.id}">
         <span class="avatar ${i.status === 'out' ? 'bad' : i.status === 'low' ? 'warn' : ''}">${initials(i.name)}</span>
-        <span class="grow"><div class="title">${i.name}</div>
+        <span class="grow"><div class="title">${i.code ? html`<span class="code-tag">${i.code}</span>` : ''}${i.name}</div>
           <div class="sub">${i.kind === 'prep' ? html`<span class="pill brand">${t('stock.prepBadge')}</span> ` : ''}${t('stock.minShort', { qty: qty(i.minLevel, unitLabel(i.unit)) })} · ${i.onOrder ? t('stock.onOrderShort', { qty: qty(i.onOrder, unitLabel(i.unit)) }) : `${unitMoney(i.costPerUnit)}/${unitLabel(i.unit)}`}</div></span>
         <span class="value"><div>${qty(i.onHand, unitLabel(i.unit))}</div><div>${statusPill(i.status)}</div></span>
       </button></li>`)}</ul>`
@@ -153,6 +172,37 @@ function renderLevels(ctx) {
   draw();
 }
 const rank = (i) => (i.status === 'out' ? 0 : i.status === 'low' ? 1 : 2);
+
+/** This month's ingredient budget: a ring of what's used, what's left, and the month's pace. */
+async function drawBudget(tab) {
+  const b = await call('stock.budget', { today: today() }).catch(() => null);
+  const box = tab.querySelector('#budget');
+  if (!box || !box.isConnected) return;
+  if (!b) { box.remove(); tab.querySelector('#forecast')?.remove(); return; }
+  const used = b.usedPct === null ? 0 : Math.min(100, b.usedPct);
+  const R = 42, C = 2 * Math.PI * R;
+  const cls = b.pace === 'over' ? 'bad' : b.pace === 'ahead' ? 'warn' : 'ok';
+  mount(box, html`
+    <div class="budget-head"><h2>${t('budget.title')}</h2><span class="small muted">${fmtMonth(b.month)}</span></div>
+    ${b.budget > 0 ? html`<div class="budget-body">
+      <div class="ring ${cls}" role="img" aria-label="${t('budget.ringLabel', { pct: number(b.usedPct || 0, 0) })}">
+        <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="${R}" class="ring-track"/>
+          <circle cx="50" cy="50" r="${R}" class="ring-bar" stroke-dasharray="${(used / 100 * C).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 50 50)"/>
+          <line class="ring-pace" x1="50" y1="2" x2="50" y2="14" transform="rotate(${(b.elapsedPct * 3.6).toFixed(1)} 50 50)"/></svg>
+        <div class="ring-text"><b>${number(b.usedPct || 0, 0)}<small>%</small></b><span>${t('budget.used')}</span></div>
+      </div>
+      <div class="budget-figs">
+        <div class="small muted">${b.remaining >= 0 ? t('budget.left') : t('budget.overBy')}</div>
+        <div class="budget-left ${b.remaining < 0 ? 'neg' : ''}">${money(Math.abs(b.remaining), { cents: false })}</div>
+        <div class="small">${t('budget.spentOf', { spent: money(b.spent, { cents: false }), budget: money(b.budget, { cents: false }) })}</div>
+        <div class="pill ${cls === 'ok' ? 'good' : cls}" style="margin-top:8px">${t(`budget.pace.${b.pace}`, { pct: number(b.elapsedPct, 0) })}</div>
+      </div></div>
+      <p class="small muted" style="margin:12px 0 0">${b.source === 'set' ? t('budget.basisSet') : t('budget.basisAuto', { pct: number(b.targetPct, 1) })}</p>`
+    : html`<p class="small muted" style="margin:6px 0 0">${t('budget.noSales')}</p>`}`);
+  const f = tab.querySelector('#forecast');
+  if (f) mount(f, html`<div class="label">${icon('chart')}${t('budget.forecast')}</div><div class="val">${money(b.forecastRevenue, { cents: false })}</div>
+    <div class="sub">${t('budget.forecastHow', { avg: money(b.avgDaily, { cents: false }) })}</div>`);
+}
 
 /* --------------------------------------------------------------- history */
 
@@ -607,7 +657,10 @@ export function ingredientSheet(ctx, item, preset = {}) {
         <button type="button" data-kind="raw" aria-pressed="${kind === 'raw'}">${t('stock.kindRaw')}</button>
         <button type="button" data-kind="prep" aria-pressed="${kind === 'prep'}">${t('stock.kindPrep')}</button>
       </div>
-      <label class="field"><span class="label">${t('common.name')}</span><input class="input" name="name" value="${item.name || ''}" maxlength="80" required></label>
+      <div class="form-row name-code">
+        <label class="field"><span class="label">${t('common.name')}</span><input class="input" name="name" value="${item.name || ''}" maxlength="80" required></label>
+        <label class="field"><span class="label">${t('stock.code')}</span><input class="input" name="code" value="${item.code || ''}" maxlength="30" placeholder="${t('common.optional')}" autocapitalize="characters"></label>
+      </div>
       <div class="form-row">
         <label class="field"><span class="label">${t('stock.unit')}</span><select class="select" name="unit">${options(units.map((u) => ({ value: u, label: u })), item.unit || units[0])}</select></label>
         <label class="field"><span class="label">${t('common.category')}</span><select class="select" name="category">${options(cats, item.category, { placeholder: t('common.none') })}</select></label>
@@ -772,7 +825,7 @@ export function ingredientSheet(ctx, item, preset = {}) {
         }).filter((c) => c.unit || c.factor !== '');
         const payload = {
           item: {
-            id: item.id, version: item.version, name: f.name.value, unit: f.unit.value, category: f.category.value,
+            id: item.id, version: item.version, name: f.name.value, code: f.code.value, unit: f.unit.value, category: f.category.value,
             costPerUnit: isPrep ? 0 : f.costPerUnit.value, minLevel: f.minLevel.value, parLevel: f.parLevel.value,
             supplierId: isPrep ? '' : f.supplierId.value, active: isNew ? true : f.active.checked,
             yieldPct: f.yieldPct.value.trim(), kind,

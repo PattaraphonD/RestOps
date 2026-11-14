@@ -1,4 +1,5 @@
-// API client. Talks to the Apps Script web app, or to the in-browser demo backend.
+// API client. Talks to the shop's server (Supabase function, or the older Apps Script web app),
+// or to the in-browser demo backend.
 import { t, getLang } from './i18n.js';
 
 const K = { token: 'ro.token', user: 'ro.user', url: 'ro.apiUrl', mode: 'ro.mode' };
@@ -36,7 +37,7 @@ async function remote(req) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   try {
-    // text/plain keeps this a "simple" CORS request, which Apps Script web apps accept.
+    // text/plain keeps this a "simple" CORS request (no preflight), which both servers accept.
     const res = await fetch(url, {
       method: 'POST', body: JSON.stringify(req), redirect: 'follow', signal: ctrl.signal,
       headers: { 'Content-Type': 'text/plain;charset=utf-8' },

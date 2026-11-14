@@ -3,6 +3,9 @@ import { call, session, login, logout, setAuthLostHandler } from './api.js';
 import { html, raw, mount, icon, toast, setFormat, busy, showFormError, today, $ } from './ui.js';
 import { t } from './i18n.js';
 
+// The shop's server: the Supabase function (v2) or, as a fallback, the Apps Script web app.
+const SERVER_URL = /^https:\/\/([a-z0-9-]+\.supabase\.co\/functions\/v1\/|script\.google(usercontent)?\.com\/)/;
+
 const ROLES = { staff: 1, manager: 2, owner: 3 };
 const VIEWS = {
   home: () => import('./views/home.js'),
@@ -159,7 +162,7 @@ function renderLogin() {
       <details class="server" ${!session.apiUrl && !demo ? raw('open') : ''}>
         <summary>${t('login.server')}</summary>
         <label class="field" style="margin-top:8px"><span class="label">${t('login.serverUrl')}</span>
-          <input class="input" id="api-url" inputmode="url" placeholder="https://script.google.com/macros/s/…/exec" value="${session.apiUrl}">
+          <input class="input" id="api-url" inputmode="url" placeholder="https://…supabase.co/functions/v1/api" value="${session.apiUrl}">
           <span class="hint">${t('login.serverHint')}</span></label>
         ${demo ? html`<button class="btn sm" type="button" id="use-server">${t('login.useServer')}</button>` : ''}
       </details>
@@ -172,7 +175,7 @@ function renderLogin() {
     const btn = form.querySelector('[type=submit]');
     busy(btn, async () => {
       if (session.mode !== 'demo') {
-        if (urlInput.value.trim() && !/^https:\/\/script\.google(usercontent)?\.com\//.test(urlInput.value.trim())) {
+        if (urlInput.value.trim() && !SERVER_URL.test(urlInput.value.trim())) {
           throw new Error(t('login.badUrl'));
         }
         session.setApiUrl(urlInput.value);

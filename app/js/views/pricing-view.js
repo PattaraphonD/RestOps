@@ -6,7 +6,7 @@ import { t } from '../i18n.js';
 import { channelIcon } from './channels.js';
 
 const P = () => window.RestoPricing;
-const ui = { channelId: null };
+const ui = { channelId: null, mode: 'board' };
 
 export const target = (boot) => Number(boot.settings.targetFoodCostPct) || 30;
 export const rounding = (boot) => P().effectiveRounding(boot.settings.priceRounding, boot.settings.currency);
@@ -24,10 +24,29 @@ export function econLine(boot, e) {
     ${e.foodCostPctNet === null ? '' : html` · ${foodCostPill(e.foodCostPctNet, target(boot))}`}`;
 }
 
-export function renderPricing(ctx, host, { openDish } = {}) {
+/** Pricing tab: the profit board for all channels (default) or one channel at a time. */
+export function renderPricing(ctx, host, opts = {}) {
   const boot = ctx.state.boot;
   const channels = (boot.channels || []).filter((c) => c.active);
   if (!channels.length) { mount(host, html`<div class="card">${emptyState('truck', t('pricing.noChannels'), '')}</div>`); return; }
+  mount(host, html`<div class="seg" role="group" aria-label="${t('pb.view')}">
+      <button aria-pressed="${ui.mode === 'board'}" data-mode="board">${t('pb.modeBoard')}</button>
+      <button aria-pressed="${ui.mode === 'channel'}" data-mode="channel">${t('pb.modeChannel')}</button></div>
+    <div id="pricing-body"></div>`);
+  $$('[data-mode]', host).forEach((b) => b.addEventListener('click', () => { ui.mode = b.dataset.mode; renderPricing(ctx, host, opts); }));
+  const body = host.querySelector('#pricing-body');
+  if (ui.mode === 'board') {
+    return import('./profit-board.js').then((m) => m.renderBoard(ctx, body, {
+      openDish: opts.openDish,
+      openChannel: (id) => { ui.channelId = id; ui.mode = 'channel'; renderPricing(ctx, host, opts); },
+    }));
+  }
+  return renderChannelPricing(ctx, body, opts);
+}
+
+function renderChannelPricing(ctx, host, { openDish } = {}) {
+  const boot = ctx.state.boot;
+  const channels = (boot.channels || []).filter((c) => c.active);
   if (!channels.some((c) => c.id === ui.channelId)) ui.channelId = (channels.find((c) => c.type === 'delivery') || channels[0]).id;
   const ch = channels.find((c) => c.id === ui.channelId);
   const dishes = boot.menu.filter((m) => m.active && m.recipe.length);
@@ -59,13 +78,13 @@ export function renderPricing(ctx, host, { openDish } = {}) {
       </button></li>`)}</ul>` : emptyState('chef', t('pricing.noDishes'), t('pricing.noDishesText'))}</div>
     <p class="small muted" style="margin:10px 4px">${t('pricing.note', { n: target(boot) })}</p>`);
 
-  $$('[data-ch]', host).forEach((b) => b.addEventListener('click', () => { ui.channelId = b.dataset.ch; renderPricing(ctx, host, { openDish }); }));
+  $$('[data-ch]', host).forEach((b) => b.addEventListener('click', () => { ui.channelId = b.dataset.ch; renderChannelPricing(ctx, host, { openDish }); }));
   $$('[data-dish]', host).forEach((b) => b.addEventListener('click', () => openDish && openDish(boot.menu.find((m) => m.id === b.dataset.dish))));
   const apply = host.querySelector('#apply');
-  if (apply) apply.addEventListener('click', () => previewSheet(ctx, ch, below, () => renderPricing(ctx, host, { openDish })));
+  if (apply) apply.addEventListener('click', () => previewSheet(ctx, ch, below, () => renderChannelPricing(ctx, host, { openDish })));
 }
 
-export function selectChannel(id) { ui.channelId = id; }
+export function selectChannel(id) { ui.channelId = id; ui.mode = 'channel'; }
 
 function previewSheet(ctx, ch, rows, done) {
   const boot = ctx.state.boot;

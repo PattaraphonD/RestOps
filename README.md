@@ -3,8 +3,8 @@
 A phone app for running a restaurant's back office: **stock, recipe costing, daily sales, expenses, and profit**.
 
 - **App:** an installable web app (PWA). It opens from the home screen like a normal app, works on Android and iPhone from one codebase, and needs no App Store or Play Store approval.
-- **Middle layer:** Google Apps Script, published as a small web API. The app never talks to Google Sheets directly, so no Google credentials ever live on a phone. The script checks logins and roles, and locks every write so two people can't overwrite each other.
-- **Database:** one Google Spreadsheet, one tab per table.
+- **Server and database (v2):** **Supabase** — Postgres in Singapore and one Edge Function (`supabase/functions/api`). The function runs the same business rules as the app's demo (`app/js/core.js`), loads the tables an action needs, and saves each action in one transaction behind a lock, so a save lands completely or not at all and two people can't overwrite each other. The tables are locked to everything except that function. Set-up guide (Thai): **[docs/SUPABASE.md](docs/SUPABASE.md)**.
+- **Earlier server (kept as a fallback):** Google Apps Script + one Google Spreadsheet (`backend/`). Switching back is one line in `app/config.js`.
 
 **Thai (ภาษาไทย) throughout.** Every screen, message and server error is in Thai, with Thai number and date formats (Buddhist-era years, ฿). There is no language switch.
 

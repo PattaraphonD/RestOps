@@ -1,11 +1,28 @@
 // Home: dashboard (managers/owners) or today's overview (staff).
 import { call } from '../api.js';
-import { html, mount, icon, money, pct, today, fmtMonth, fmtDate, timeOf, number, $, $$, emptyState, printHtml } from '../ui.js';
+import { html, mount, icon, money, pct, today, addDays, fmtMonth, fmtDate, timeOf, number, $, $$, emptyState, printHtml } from '../ui.js';
 import { produceSheet } from './production.js';
 import { cashFlowChart, barList } from '../charts.js';
 import { t } from '../i18n.js';
 
 let month = null;
+let anchor = null; // the day shown, or a day in the week shown
+
+const PERIODS = ['day', 'week', 'month'];
+function getPeriod() { try { const p = localStorage.getItem('ro.home.period'); return PERIODS.includes(p) ? p : 'month'; } catch { return 'month'; } }
+function setPeriod(p) { try { localStorage.setItem('ro.home.period', p); } catch { /* storage blocked */ } }
+/** Monday–Sunday of the week containing d. */
+function weekOf(d) {
+  const dow = new Date(d + 'T00:00:00Z').getUTCDay();
+  const from = addDays(d, -((dow + 6) % 7));
+  return [from, addDays(from, 6)];
+}
+function weekLabel(from, to) {
+  const sameMonth = from.slice(0, 7) === to.slice(0, 7);
+  return sameMonth
+    ? `${Number(from.slice(8))}–${fmtDate(to, { day: 'numeric', month: 'short', year: 'numeric' })}`
+    : `${fmtDate(from, { day: 'numeric', month: 'short' })} – ${fmtDate(to, { day: 'numeric', month: 'short', year: 'numeric' })}`;
+}
 
 function greeting(name) {
   const h = new Date().getHours();
@@ -109,22 +126,45 @@ export async function render(ctx) {
   setTitle(greeting(firstName));
   if (!can('manager')) return renderStaff(ctx);
 
-  month = month || today().slice(0, 7);
-  const atLatest = month >= today().slice(0, 7);
+  const period = getPeriod();
+  const tday = today();
+  month = month || tday.slice(0, 7);
+  anchor = anchor && anchor <= tday ? anchor : tday;
+  let label, sub, atLatest;
+  if (period === 'month') {
+    label = fmtMonth(month); sub = month === tday.slice(0, 7) ? t('home.monthToDate') : t('home.fullMonth'); atLatest = month >= tday.slice(0, 7);
+  } else if (period === 'week') {
+    const [from, to] = weekOf(anchor);
+    label = weekLabel(from, to); atLatest = to >= tday;
+    sub = atLatest ? t('home.weekToDate') : t('home.fullWeek');
+  } else {
+    label = fmtDate(anchor, { weekday: 'long', day: 'numeric', month: 'long' }); atLatest = anchor >= tday;
+    sub = anchor === tday ? t('home.todayLabel') : anchor === addDays(tday, -1) ? t('home.yesterday') : fmtDate(anchor, { year: 'numeric' });
+  }
+  const unit = period === 'month' ? 'Month' : period === 'week' ? 'Week' : 'Day';
   mount(el, html`
+    <div class="seg period-seg" role="group" aria-label="${t('home.period')}">${PERIODS.map((k) =>
+      html`<button aria-pressed="${period === k}" data-period="${k}">${t(`home.period.${k}`)}</button>`)}</div>
     <div class="date-nav">
-      <button class="icon-btn" data-m="-1" aria-label="${t('common.prevMonth')}">${icon('chevL')}</button>
-      <div class="date-label">${fmtMonth(month)}<div class="sub">${month === today().slice(0, 7) ? t('home.monthToDate') : t('home.fullMonth')}</div></div>
-      <button class="icon-btn" data-m="1" aria-label="${t('common.nextMonth')}" ${atLatest ? 'disabled' : ''} style="${atLatest ? 'opacity:.3' : ''}">${icon('chevR')}</button>
+      <button class="icon-btn" data-m="-1" aria-label="${t(`home.prev${unit}`)}">${icon('chevL')}</button>
+      <div class="date-label">${label}<div class="sub">${sub}${period !== 'month' && !atLatest
+        ? html` · <button class="link-btn" data-today>${t(period === 'week' ? 'home.backToThisWeek' : 'home.backToToday')}</button>` : ''}</div></div>
+      <button class="icon-btn" data-m="1" aria-label="${t(`home.next${unit}`)}" ${atLatest ? 'disabled' : ''} style="${atLatest ? 'opacity:.3' : ''}">${icon('chevR')}</button>
     </div>
     <div id="dash"><div class="skeleton" style="height:130px"></div><div class="skeleton" style="height:240px;margin-top:12px"></div></div>`);
+  $$('[data-period]', el).forEach((b) => b.addEventListener('click', () => { setPeriod(b.dataset.period); render(ctx); }));
+  el.querySelector('[data-today]')?.addEventListener('click', () => { anchor = tday; render(ctx); });
   el.querySelectorAll('[data-m]').forEach((b) => b.addEventListener('click', () => {
+    const step = Number(b.dataset.m);
+    if (period === 'day') { const d = addDays(anchor, step); if (d > tday) return; anchor = d; return render(ctx); }
+    if (period === 'week') { const d = addDays(anchor, step * 7); anchor = d > tday ? tday : d; return render(ctx); }
     const [y, m] = month.split('-').map(Number);
-    const d = new Date(Date.UTC(y, m - 1 + Number(b.dataset.m), 1)).toISOString().slice(0, 7);
-    if (d > today().slice(0, 7)) return;
+    const d = new Date(Date.UTC(y, m - 1 + step, 1)).toISOString().slice(0, 7);
+    if (d > tday.slice(0, 7)) return;
     month = d;
     render(ctx);
   }));
+  if (period !== 'month') return renderPeriod(ctx, period, anchor);
 
   const [r, sum] = await Promise.all([call('reports.summary', { month, today: today() }),
     month === today().slice(0, 7) ? todaySummary(today()) : null]);
@@ -242,6 +282,138 @@ export async function render(ctx) {
       detail: t('home.topDetail', { revenue: money(i.revenue, { cents: false }), pct: pct(i.foodCostPct) }),
     })));
   }
+}
+
+/* ---------------------------------------------------- day and week summaries */
+
+async function renderPeriod(ctx, period, date) {
+  const boot = ctx.state.boot;
+  const tday = today();
+  const includesToday = period === 'day' ? date === tday : weekOf(date)[1] >= tday;
+  const [r, sum] = await Promise.all([call('reports.period', { period, date, today: tday }), includesToday ? todaySummary(tday) : null]);
+  if (ctx.stale() || !$('#dash')) return;
+  const tot = r.totals, p = r.previous;
+  const target = Number(boot.settings.targetFoodCostPct) || 30;
+  const foodCls = tot.foodCostPct === null ? '' : tot.foodCostPct <= target ? 'good' : tot.foodCostPct <= target + 5 ? 'warn' : 'bad';
+  const gross = tot.revenue - tot.cogs - (tot.commissions || 0) - tot.wasteAndVariance;
+  const pGross = p.revenue - p.cogs - (p.commissions || 0) - p.wasteAndVariance;
+  const vs = period === 'day'
+    ? t('home.vsWeekday', { day: fmtDate(p.from, { weekday: 'short', day: 'numeric', month: 'short' }) })
+    : r.partial ? t('home.vsSameDaysLastWeek') : t('home.vsLastWeek');
+  const elapsed = period === 'week' ? r.days.filter((d) => !d.future).length : 1;
+  const byChannel = r.byChannel || [];
+  const showChannels = byChannel.length > 1 || byChannel.some((c) => c.commission);
+  const heroLabel = period === 'day' ? (includesToday ? t('home.salesDay') : t('home.salesOfDay'))
+    : (includesToday ? t('home.salesWeek') : t('home.salesOfWeek'));
+  const dayShort = fmtDate(date, { day: 'numeric', month: 'short' });
+
+  mount($('#dash'), html`
+    ${sum ? html`${setupCard(sum.setup)}${todayCard(sum)}` : ''}
+    <div class="kpis">
+      <div class="card kpi hero"><div class="label">${icon('receipt')}${heroLabel}</div>
+        <div class="val tabular">${money(tot.revenue, { cents: false })}</div>
+        ${delta(tot.revenue, p.revenue, { suffix: vs })}</div>
+      <div class="card kpi"><div class="label">${t('home.itemsSoldLabel')}</div><div class="val">${number(tot.orders, 0)}</div>
+        ${delta(tot.orders, p.orders, { suffix: t('home.vsShort') })}</div>
+      <div class="card kpi"><div class="label">${t('home.foodCost')}</div><div class="val">${pct(tot.foodCostPct)}</div>
+        <div class="delta">${tot.foodCostPct === null ? t('home.noSalesYet') : html`<span class="pill ${foodCls}" style="font-size:11px">${t('home.target', { n: target })}</span>`}</div></div>
+      <div class="card kpi"><div class="label">${t('home.grossProfit')}</div>
+        <div class="val" style="${gross < 0 ? 'color:var(--bad-ink)' : ''}">${money(gross, { cents: false })}</div>
+        ${delta(gross, pGross, { suffix: t('home.vsShort') })}</div>
+      ${period === 'week'
+        ? html`<div class="card kpi"><div class="label">${t('home.avgDay')}</div><div class="val">${money(tot.revenue / elapsed, { cents: false })}</div>
+            <div class="delta">${t('home.avgDayHow', { n: elapsed })}</div></div>`
+        : html`<div class="card kpi"><div class="label">${t('home.avgDish')}</div><div class="val">${tot.orders ? money(tot.revenue / tot.orders) : '—'}</div>
+            <div class="delta">${tot.revenue ? t('home.margin', { pct: pct(gross / tot.revenue * 100) }) : '—'}</div></div>`}
+    </div>
+
+    ${period === 'week' ? html`<section class="section">
+      <div class="section-head"><h2>${t('home.dailySales')}</h2>${r.best ? html`<span class="small muted">${t('home.bestDay', { day: fmtDate(r.best.date, { weekday: 'long' }), amount: money(r.best.revenue, { cents: false }) })}</span>` : ''}</div>
+      <div class="card pad">${weekChart(r)}
+        <div class="week-legend small muted"><span><i class="lg-now"></i>${t('home.thisWeek')}</span><span><i class="lg-prev"></i>${t('home.lastWeek')}</span>${r.best ? html`<span><i class="lg-best"></i>${t('home.bestDayShort')}</span>` : ''}</div>
+      </div>
+      <div class="card" style="margin-top:10px"><ul class="list">${r.days.map((d) => html`<li>
+        <button class="row week-row${d.future ? ' future' : ''}" data-day="${d.date}" ${d.future ? 'disabled' : ''}>
+          <span class="avatar ${d.closed ? 'good' : ''}">${d.closed ? icon('check') : fmtDate(d.date, { weekday: 'narrow' })}</span>
+          <span class="grow"><div class="title">${fmtDate(d.date, { weekday: 'long', day: 'numeric', month: 'short' })}</div>
+            <div class="sub">${d.future ? t('home.notYet') : t('home.dayLine', { n: number(d.dishes, 0), pct: pct(d.foodCostPct) })}${!d.future && !d.closed && d.date < tday ? html` · <span style="color:var(--warn-ink)">${t('home.notClosedShort')}</span>` : ''}</div></span>
+          <span class="value">${d.future ? '—' : money(d.revenue, { cents: false })}
+            ${!d.future && d.prevRevenue ? html`<div class="sub">${t('home.lastWeekShort', { amount: money(d.prevRevenue, { cents: false }) })}</div>` : ''}</span>
+          ${d.future ? '' : icon('chevR', 'chev')}</button></li>`)}</ul></div>
+    </section>` : html`<div class="grid-2"><section class="section">
+      <div class="section-head"><h2>${t('home.dayClose')}</h2></div>
+      <div class="card pad">${r.close
+        ? html`<div class="close-done">${icon('check')}<div><b>${t('home.closedBy', { who: r.close.closedBy, time: timeOf(r.close.closedAt) })}</b>
+            <div class="small muted">${t('home.closeFigures', { sales: money(r.close.salesTotal, { cents: false }), waste: money(r.close.wasteValue, { cents: false }), n: r.close.countLines })}</div></div></div>
+          ${r.close.note ? html`<blockquote class="close-note">${r.close.note}</blockquote>` : ''}`
+        : html`<p class="small muted" style="margin:0 0 10px">${date === tday ? t('home.notClosed') : t('home.notClosedPast', { date: dayShort })}</p>
+          <a class="btn accent block" href="#/close/${date}">${icon('clipboard')}${date === tday ? t('home.closeThisDay') : t('home.closeThatDay', { date: dayShort })}</a>`}</div>
+    </section>
+    <section class="section">
+      <div class="section-head"><h2>${t('home.wasteDay')}</h2><span class="small muted">${money(tot.wasteAndVariance > 0 ? r.waste.reduce((a, w) => a + w.value, 0) : 0, { cents: false })}</span></div>
+      <div class="card">${r.waste.length ? html`<ul class="list">${r.waste.map((w) => html`<li class="row" style="min-height:52px">
+          <span class="grow"><div class="title">${w.name}</div><div class="sub">${number(w.qty, 3)} ${w.unit}</div></span>
+          <span class="value">${money(w.value)}</span></li>`)}</ul>`
+        : emptyState('check', t('home.noWaste'), '')}</div>
+    </section></div>`}
+
+    <div class="grid-2"><section class="section">
+      <div class="section-head"><h2>${t('home.topSellers')}</h2><a class="link" href="#/menu">${t('home.menuCosting')}</a></div>
+      <div class="card pad">${r.topItems.length ? html`<div id="top"></div>` : emptyState('receipt', t('home.noSalesPeriodTitle'), t('home.noSalesPeriodText'))}</div>
+    </section>
+    ${showChannels ? html`<section class="section">
+      <div class="section-head"><h2>${t('home.byChannel')}</h2><a class="link" href="#/menu/analysis">${t('menu.tabAnalysis')}</a></div>
+      <div class="card pad"><div id="bych"></div></div>
+    </section>` : ''}</div>
+
+    <section class="section">
+      <div class="section-head"><h2>${period === 'day' ? t('home.plDay') : t('home.plWeek')}</h2><span class="small muted">${period === 'day' ? dayShort : weekLabel(r.from, r.to)}</span></div>
+      <div class="card">
+        <div class="pl-row"><span>${t('home.revenue')}</span><b>${money(tot.revenue)}</b></div>
+        <div class="pl-row indent"><span>${t('home.foodCostRecipes')}</span><span>−${money(tot.cogs)}</span></div>
+        <div class="pl-row indent"><span>${t('home.wasteVariance')}</span><span>${tot.wasteAndVariance >= 0 ? '−' : '+'}${money(Math.abs(tot.wasteAndVariance))}</span></div>
+        ${tot.commissions ? html`<div class="pl-row indent"><span>${t('home.commissions')}</span><span>−${money(tot.commissions)}</span></div>` : ''}
+        <div class="pl-row total"><span>${t('home.grossProfit')}</span><span>${money(gross)}</span></div>
+        ${r.expenseCategories.map((c) => html`<div class="pl-row indent"><span>${c.category}</span><span>−${money(c.amount)}</span></div>`)}
+        <div class="pl-row total"><span>${t('home.netProfit')}</span><span style="${tot.netProfit < 0 ? 'color:var(--bad-ink)' : ''}">${money(tot.netProfit)}</span></div>
+      </div>
+      <p class="small muted" style="margin:8px 4px 0">${t('home.periodPlNote')}</p>
+    </section>
+    <div class="section">${quickActions(true)}</div>`);
+
+  wireToday(ctx, ctx.el, sum);
+  $$('[data-day]', ctx.el).forEach((b) => b.addEventListener('click', () => { anchor = b.dataset.day; setPeriod('day'); render(ctx); window.scrollTo(0, 0); }));
+  $$('[data-bar]', ctx.el).forEach((b) => b.addEventListener('click', () => { anchor = b.dataset.bar; setPeriod('day'); render(ctx); window.scrollTo(0, 0); }));
+  const top = $('#top');
+  if (top) barList(top, r.topItems.map((i) => ({ label: i.name, value: i.qty, valueLabel: t('home.nSold', { n: number(i.qty, 0) }),
+    detail: t('home.topDetail', { revenue: money(i.revenue, { cents: false }), pct: pct(i.foodCostPct) }) })));
+  const bych = $('#bych');
+  if (bych) barList(bych, byChannel.map((c) => ({ label: c.channelId ? c.name : t('common.other'), value: Math.max(0, c.revenue),
+    valueLabel: money(c.revenue, { cents: false }), detail: t('home.channelDetail', { cm: money(c.cm, { cents: false }), commission: money(c.commission, { cents: false }) }) })));
+}
+
+/** This week's sales per day against last week's (lighter bar); the best day in coral. Tap a day to open it. */
+function weekChart(r) {
+  const W = 700, H = 210, top = 26, base = 172;
+  const max = Math.max(1, ...r.days.map((d) => Math.max(d.revenue, d.prevRevenue)));
+  const h = (v) => Math.max(0, v) / max * (base - top);
+  const slot = W / 7;
+  const short = (v) => (v >= 1000 ? `${number(v / 1000, v >= 10000 ? 0 : 1)}k` : number(v, 0));
+  return html`<svg class="week-chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="${t('home.dailySales')}">
+    <line x1="0" x2="${W}" y1="${base}" y2="${base}" class="wk-axis"/>
+    ${r.days.map((d, i) => {
+      const x = i * slot + slot / 2;
+      const best = r.best && r.best.date === d.date;
+      return html`<g class="wk-day${d.future ? ' future' : ''}" ${d.future ? '' : html`data-bar="${d.date}" tabindex="0" role="button"`}
+        aria-label="${fmtDate(d.date, { weekday: 'long' })}: ${money(d.revenue, { cents: false })}">
+        <rect x="${x - slot / 2 + 4}" y="0" width="${slot - 8}" height="${H}" class="wk-hit"/>
+        <rect x="${x - 22}" y="${base - h(d.prevRevenue)}" width="18" height="${h(d.prevRevenue)}" rx="4" class="wk-prev"/>
+        ${d.future ? '' : html`<rect x="${x - 2}" y="${base - h(d.revenue)}" width="24" height="${h(d.revenue)}" rx="4" class="wk-now${best ? ' best' : ''}"/>
+          <text x="${x + 10}" y="${base - h(d.revenue) - 8}" class="wk-val">${d.revenue ? short(d.revenue) : ''}</text>`}
+        <text x="${x}" y="${base + 22}" class="wk-label${d.date === r.today ? ' today' : ''}">${fmtDate(d.date, { weekday: 'short' })}</text>
+        <text x="${x}" y="${base + 37}" class="wk-date">${Number(d.date.slice(8))}</text>
+      </g>`;
+    })}</svg>`;
 }
 
 async function renderStaff(ctx) {
