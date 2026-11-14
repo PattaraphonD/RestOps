@@ -1,6 +1,6 @@
 // Service worker: caches the app shell so it opens instantly and works without signal.
 // Data calls go to the network (the Apps Script URL is never cached).
-const CACHE = 'resto-ops-v2.0.3';
+const CACHE = 'resto-ops-v2.0.4';
 const SHELL = [
   './', './index.html', './config.js', './manifest.webmanifest', './css/app.css',
   './js/costing.js', './js/pricing.js', './js/core.js', './js/i18n.js', './js/app.js', './js/api.js', './js/ui.js', './js/charts.js', './js/demo.js',
@@ -21,7 +21,7 @@ self.addEventListener('activate', (e) => {
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
-  if (e.request.method !== 'GET' || url.origin !== location.origin) return;
+  if (e.request.method !== 'GET' || url.origin !== location.origin || url.pathname.startsWith('/api/')) return;
   // Network first (so updates arrive), fall back to cache when offline.
   e.respondWith(
     fetch(e.request).then((res) => {
