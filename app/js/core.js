@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.3.0';
+  var VERSION = '2.3.1';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -3426,6 +3426,44 @@ var RestoCore = (function () {
         changedSincePublish: shifts.filter(function (s) { return s.changed; }).length + removed, removedSincePublish: removed, canEdit: manager,
         people: people, shifts: shifts, days: days, totalHours: Math.round(sum(shifts, function (s) { return s.hours; }) * 100) / 100,
         templates: manager ? templateRows() : [] };
+    } };
+
+    /** The month as a calendar: Monday before the 1st to the Sunday after the last day; staff get published weeks only. */
+    A['schedule.month'] = { role: 'staff', write: false, fn: function (p, user) {
+      var month = reqMonth(p.month);
+      var first = month + '-01', last = monthEnd(month);
+      var from = weekStartOf(first), to = addDays(weekStartOf(last), 6);
+      var manager = ROLES[user.role] >= ROLES.manager;
+      var tpls = byId(db.read('ShiftTemplates'));
+      var weeks = [], pubs = {};
+      for (var ws = from; ws <= to; ws = addDays(ws, 7)) {
+        var pub = publishOf(ws);
+        pubs[ws] = pub;
+        weeks.push({ weekStart: ws, published: !!pub });
+      }
+      var shifts = liveShifts().filter(function (s) { return s.date >= from && s.date <= to && (manager || pubs[weekStartOf(s.date)]); })
+        .map(function (s) { return shiftOut(s, tpls, pubs[weekStartOf(s.date)]); })
+        .sort(function (a, b) { return (a.date + a.startTime).localeCompare(b.date + b.startTime); });
+      weeks.forEach(function (w) {
+        var we = addDays(w.weekStart, 6);
+        var inWeek = shifts.filter(function (s) { return s.date >= w.weekStart && s.date <= we; });
+        w.shifts = inWeek.length;
+        w.changed = inWeek.filter(function (s) { return s.changed; }).length;
+      });
+      // Hours count only the days inside the month (the calendar's spill-over days are shown, not counted).
+      var hoursOf = {}, inMonth = shifts.filter(function (s) { return s.date >= first && s.date <= last; });
+      inMonth.forEach(function (s) { hoursOf[s.userId] = (hoursOf[s.userId] || 0) + s.hours; });
+      var shown = {};
+      shifts.forEach(function (s) { shown[s.userId] = 1; });
+      var people = db.read('Users').filter(function (u) { return (manager && bool(u.active)) || shown[u.id]; })
+        .sort(rolesFirst).map(function (u) {
+          var days = {};
+          inMonth.forEach(function (s) { if (s.userId === u.id) days[s.date] = 1; });
+          return { id: u.id, name: staffName(u), position: u.position || '', colour: u.colour || '', role: u.role, active: bool(u.active),
+            hours: Math.round((hoursOf[u.id] || 0) * 100) / 100, days: Object.keys(days).length };
+        });
+      return { month: month, first: first, last: last, from: from, to: to, canEdit: manager, weeks: weeks, people: people, shifts: shifts,
+        totalHours: Math.round(sum(inMonth, function (s) { return s.hours; }) * 100) / 100 };
     } };
 
     A['schedule.copyWeek'] = { role: 'manager', write: true, fn: function (p, user) {

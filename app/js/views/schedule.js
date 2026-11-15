@@ -11,12 +11,16 @@ const BREAKS = [0, 15, 30, 45, 60, 90, 120];
 let week = '';            // the Monday on screen (kept while moving around the app)
 let view = '';            // 'day' (phones) or 'week' (the grid); first choice follows the screen width
 let pickedDay = '';
+let lastView = '';        // day or week: where tapping a day in the month view goes
+let monthOn = '';         // YYYY-MM shown in the month view
 
 const mondayOf = (d) => { const wd = new Date(`${d}T00:00:00Z`).getUTCDay(); return addDays(d, -((wd + 6) % 7)); };
 const hrs = (h) => t('sched.hours', { n: number(h, 1) });
 const span = (s) => `${s.startTime}–${s.endTime}`;
 const dayShort = (d) => fmtDate(d, { weekday: 'short' });
 const dayLong = (d) => fmtDate(d, { weekday: 'long', day: 'numeric', month: 'short' });
+/** A name without น้อง/พี่/คุณ, for tight spaces. */
+const bare = (name) => String(name || '').replace(/^(น้อง|พี่|คุณ|ป้า|ลุง)\s*/, '');
 const initial = (name) => Array.from(String(name || '?').replace(/^(น้อง|พี่|คุณ|ป้า|ลุง)\s*/, ''))[0] || '?';
 function weekLabel(ws) {
   const we = addDays(ws, 6);
@@ -72,6 +76,9 @@ async function renderMine(ctx) {
 /* ------------------------------------------------------------ the week */
 
 async function drawWeek(ctx) {
+  if (!view) view = matchMedia('(max-width: 640px)').matches ? 'day' : 'week';
+  if (!lastView) lastView = view === 'month' ? 'week' : view;
+  if (view === 'month') return drawMonth(ctx);
   const ws = week;
   const w = await call('schedule.week', { weekStart: ws });
   const host = $('#week');
@@ -85,7 +92,6 @@ async function drawWeek(ctx) {
     : w.changedSincePublish ? html`<span class="pill warn">${t('sched.changedN', { n: w.changedSincePublish })}</span>`
       : html`<span class="pill good">${icon('check')}${t('sched.published')}</span>`;
   const people = w.people;
-  if (!view) view = matchMedia('(max-width: 640px)').matches ? 'day' : 'week';
   if (!days.includes(pickedDay)) pickedDay = days.includes(tday) ? tday : ws;
   const avatar = (p, i) => html`<span class="avatar sm" style="background:${p.colour || PERSON_COLOURS[i % PERSON_COLOURS.length]};color:#fff">${initial(p.name)}</span>`;
   // Phones: one day at a time, everyone in a row, big tap targets.
@@ -124,9 +130,7 @@ async function drawWeek(ctx) {
       html`<a class="btn primary" href="#/more/team">${t('sched.goTeam')}</a>`)}</div>`
     : html`
     ${edit && !w.shifts.length ? html`<div class="sched-hint">${icon('info')}<span>${t('sched.emptyHint')}</span></div>` : ''}
-    <div class="seg view-seg" role="group" aria-label="${t('sched.view')}">
-      <button data-view="day" aria-pressed="${view === 'day'}">${t('sched.viewDay')}</button>
-      <button data-view="week" aria-pressed="${view === 'week'}">${t('sched.viewWeek')}</button></div>
+    ${viewSeg()}
     ${view === 'day' ? dayView() : html`<div class="sched-wrap card"><table class="sched">
       <thead><tr><th class="who" scope="col">${t('sched.person')}</th>${days.map((d) => html`<th scope="col" class="${d === tday ? 'today' : ''}"><span>${dayShort(d)}</span><b>${Number(d.slice(8))}</b></th>`)}</tr></thead>
       <tbody>${people.map((p, i) => html`<tr>
@@ -143,7 +147,7 @@ async function drawWeek(ctx) {
     ${edit && w.templates.some((x) => x.active) ? html`<div class="sched-legend">${w.templates.filter((x) => x.active).map((x) => html`<span><i style="background:${x.colour || 'var(--brand)'}"></i>${x.name} ${x.startTime}–${x.endTime}</span>`)}
       <button class="link-btn" id="edit-tpls">${t('sched.editTemplates')}</button></div>` : ''}`}`);
 
-  $$('[data-view]', host).forEach((b) => b.addEventListener('click', () => { view = b.dataset.view; drawWeek(ctx); }));
+  wireViewSeg(ctx, host);
   $$('[data-pick]', host).forEach((b) => b.addEventListener('click', () => { pickedDay = b.dataset.pick; drawWeek(ctx); }));
   $$('[data-w]', host).forEach((b) => b.addEventListener('click', () => {
     const n = Number(b.dataset.w);
@@ -160,6 +164,97 @@ async function drawWeek(ctx) {
 }
 
 const redraw = (ctx) => drawWeek(ctx);
+
+/* ------------------------------------------------------------ the month */
+
+const viewSeg = () => html`<div class="seg view-seg" role="group" aria-label="${t('sched.view')}">
+  <button data-view="day" aria-pressed="${view === 'day'}">${t('sched.viewDay')}</button>
+  <button data-view="week" aria-pressed="${view === 'week'}">${t('sched.viewWeek')}</button>
+  <button data-view="month" aria-pressed="${view === 'month'}">${t('sched.viewMonth')}</button></div>`;
+
+function wireViewSeg(ctx, host) {
+  $$('[data-view]', host).forEach((b) => b.addEventListener('click', () => {
+    if (b.dataset.view === view) return;
+    if (b.dataset.view === 'month') monthOn = (pickedDay || week).slice(0, 7);
+    else lastView = b.dataset.view;
+    view = b.dataset.view;
+    drawWeek(ctx);
+  }));
+}
+
+const shiftMonth = (m, n) => { const [y, mo] = m.split('-').map(Number); return new Date(Date.UTC(y, mo - 1 + n, 1)).toISOString().slice(0, 7); };
+
+async function drawMonth(ctx) {
+  const m = monthOn;
+  let r;
+  try { r = await call('schedule.month', { month: m }); } catch (e) {
+    const h = $('#week');
+    if (h && !ctx.stale()) mount(h, html`${viewSeg()}<div class="card">${emptyState('wifiOff', t('app.loadFailed'), e.message)}</div>`);
+    if (h) wireViewSeg(ctx, h);
+    return;
+  }
+  const host = $('#week');
+  if (ctx.stale() || !host || view !== 'month' || m !== monthOn) return;
+  const tday = today();
+  const edit = r.canEdit;
+  const people = Object.fromEntries(r.people.map((p, i) => [p.id, { ...p, colour: p.colour || PERSON_COLOURS[i % PERSON_COLOURS.length] }]));
+  const byDay = {};
+  r.shifts.forEach((s) => (byDay[s.date] ||= []).push(s));
+  const drafts = r.weeks.filter((w) => !w.published && w.shifts).length;
+  const curMonth = tday.slice(0, 7);
+  const heads = Array.from({ length: 7 }, (_, i) => dayShort(addDays(r.from, i)));
+  // Staff see only their own month total; managers see everyone's.
+  const me = ctx.state.boot.user.id;
+  const rows = r.people.filter((p) => p.hours && (edit || p.id === me));
+  const dayCell = (d, w) => {
+    const list = byDay[d] || [];
+    const ids = [...new Set(list.map((s) => s.userId))];
+    const out = d.slice(0, 7) !== m;
+    return html`<button type="button" class="mc-day${out ? ' out' : ''}${d === tday ? ' today' : ''}${!w.published && w.shifts ? ' draft' : ''}" data-goto="${d}"
+        aria-label="${dayLong(d)}${ids.length ? ' · ' + t('sched.nPeople', { n: ids.length }) : ''}">
+      <span class="n">${Number(d.slice(8))}</span>
+      ${ids.length ? html`<span class="mc-dots">${ids.slice(0, 4).map((id) => html`<i style="background:${(people[id] || {}).colour || 'var(--brand)'}">${initial((people[id] || {}).name)}</i>`)}${ids.length > 4 ? html`<em>+${ids.length - 4}</em>` : ''}</span>
+        <span class="mc-lines">${list.slice(0, 4).map((s) => html`<span style="--c:${(people[s.userId] || {}).colour || 'var(--brand)'}" title="${(people[s.userId] || {}).name || ''} ${s.startTime}–${s.endTime}"><b>${s.startTime}</b> ${bare((people[s.userId] || {}).name)}</span>`)}${list.length > 4 ? html`<em>${t('sched.moreN', { n: list.length - 4 })}</em>` : ''}</span>` : ''}
+    </button>`;
+  };
+  mount(host, html`
+    <div class="card pad sched-head">
+      <div class="date-nav" style="margin:0">
+        <button class="icon-btn" data-mm="-1" aria-label="${t('sched.prevMonth')}">${icon('chevL')}</button>
+        <div class="date-label">${fmtDate(m + '-01', { month: 'long', year: 'numeric' })}<div class="sub">${m === curMonth ? t('sched.thisMonth')
+          : html`<button class="link-btn" data-mm="0">${t('sched.backToThisMonth')}</button>`}</div></div>
+        <button class="icon-btn" data-mm="1" aria-label="${t('sched.nextMonth')}">${icon('chevR')}</button>
+      </div>
+      <div class="sched-status">${edit && drafts ? html`<span class="pill warn">${t('sched.draftWeeks', { n: drafts })}</span>` : html`<span></span>`}
+        <span class="small muted">${edit ? t('sched.summary', { people: rows.length, hours: number(r.totalHours, 1) }) : ''}</span></div>
+    </div>
+    ${viewSeg()}
+    <div class="card month-cal">
+      <div class="mc-head">${heads.map((h) => html`<span>${h}</span>`)}</div>
+      ${r.weeks.map((w) => html`<div class="mc-week">${Array.from({ length: 7 }, (_, i) => dayCell(addDays(w.weekStart, i), w))}</div>`)}
+    </div>
+    <p class="small muted mc-help">${edit ? t('sched.monthHelp') : t('sched.monthHelpStaff')}</p>
+    ${rows.length ? html`<section class="section"><div class="section-head"><h2>${edit ? t('sched.monthHours') : t('sched.myMonthHours')}</h2></div>
+      <div class="card"><ul class="list">${rows.map((p) => html`<li><div class="row">
+        <span class="avatar sm" style="background:${people[p.id].colour};color:#fff">${initial(p.name)}</span>
+        <span class="grow"><div class="title">${p.name}</div><div class="sub">${t('sched.nDays', { n: p.days })}${p.position ? ' · ' + p.position : ''}</div></span>
+        <span class="value">${hrs(p.hours)}</span></div></li>`)}</ul></div></section>` : ''}`);
+
+  wireViewSeg(ctx, host);
+  $$('[data-mm]', host).forEach((b) => b.addEventListener('click', () => {
+    const n = Number(b.dataset.mm);
+    monthOn = n === 0 ? curMonth : shiftMonth(monthOn, n);
+    drawMonth(ctx);
+  }));
+  // A day opens that day (phones) or its week (wide screens), where shifts are planned.
+  $$('[data-goto]', host).forEach((b) => b.addEventListener('click', () => {
+    pickedDay = b.dataset.goto;
+    week = mondayOf(pickedDay);
+    view = lastView;
+    drawWeek(ctx);
+  }));
+}
+
 
 /* ------------------------------------------------------------ assign / edit */
 

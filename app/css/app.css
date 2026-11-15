@@ -925,3 +925,32 @@ a.my-shift { display: block; color: inherit; text-decoration: none; margin-botto
 .day-cells .cell-add.more { min-height: 30px; }
 .day-cells .off { padding: 8px 0; text-align: center; color: var(--ink-3); font-size: 13px; }
 .my-shifts .sub { white-space: normal; overflow: visible; }
+
+/* ---------- schedule: month calendar (v2.3.1) ---------- */
+.view-seg button { flex: 1; }
+.month-cal { padding: 6px; }
+.mc-head, .mc-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+.mc-head span { text-align: center; font-size: 12px; font-weight: 600; color: var(--ink-3); padding: 4px 0 6px; }
+.mc-week + .mc-week { margin-top: 4px; }
+.mc-day { display: flex; flex-direction: column; align-items: stretch; gap: 3px; min-height: 64px; padding: 5px 4px; border: 1px solid var(--line);
+  border-radius: 10px; background: var(--surface); color: var(--ink); font: inherit; text-align: left; cursor: pointer; overflow: hidden; }
+.mc-day .n { font-size: 13px; font-weight: 700; line-height: 1; }
+.mc-day.out { background: var(--surface-2); color: var(--ink-3); }
+.mc-day.out .mc-dots, .mc-day.out .mc-lines { opacity: .55; }
+.mc-day.draft { border-style: dashed; border-color: var(--warn); }
+.mc-day.today { border: 2px solid var(--brand); }
+.mc-day.today .n { color: var(--brand); }
+.mc-day:hover { border-color: var(--brand); }
+.mc-dots { display: flex; flex-wrap: wrap; gap: 2px; }
+.mc-dots i { display: grid; place-items: center; width: 17px; height: 17px; border-radius: 50%; color: #fff; font-style: normal; font-size: 10px; font-weight: 700; }
+.mc-dots em { font-style: normal; font-size: 10.5px; color: var(--ink-3); align-self: center; }
+.mc-lines { display: none; flex-direction: column; gap: 2px; }
+.mc-lines span { display: block; font-size: 11.5px; padding: 1px 4px; border-left: 3px solid var(--c); border-radius: 3px;
+  background: color-mix(in srgb, var(--c) 12%, transparent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.mc-lines em { font-style: normal; font-size: 11px; color: var(--ink-3); }
+.mc-help { margin: 8px 2px 0; }
+@media (min-width: 700px) {
+  .mc-day { min-height: 96px; padding: 6px; }
+  .mc-dots { display: none; }
+  .mc-lines { display: flex; }
+}
