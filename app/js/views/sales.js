@@ -4,7 +4,7 @@ import {
   html, mount, icon, money, number, pct, today, addDays, relDay, fmtDate, timeOf, $, $$, openSheet, confirmSheet,
   toast, busy, options, emptyState,
 } from '../ui.js';
-import { list } from '../app.js';
+import { list, allowed } from '../app.js';
 import { t } from '../i18n.js';
 import { econFor, valueText } from './promo-builder.js';
 
@@ -34,11 +34,13 @@ export async function render(ctx) {
   el.querySelector('.date-label input').addEventListener('change', (e) => { if (e.target.value) { day = e.target.value; render(ctx); } });
 
   document.querySelectorAll('.fab').forEach((f) => f.remove());
-  const fab = document.createElement('button');
-  fab.className = 'fab';
-  mount(fab, html`${icon('plus')}${t('sales.add')}`);
-  fab.addEventListener('click', () => entrySheet(ctx));
-  document.body.append(fab);
+  if (allowed('sales')) {
+    const fab = document.createElement('button');
+    fab.className = 'fab';
+    mount(fab, html`${icon('plus')}${t('sales.add')}`);
+    fab.addEventListener('click', () => entrySheet(ctx));
+    document.body.append(fab);
+  }
 
   const s = await call('sales.list', { from: day, to: day });
   if (ctx.stale() || !$('#day')) return;

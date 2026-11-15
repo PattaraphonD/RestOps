@@ -6,6 +6,7 @@ import {
   toast, busy, options, emptyState, unitLabel,
 } from '../ui.js';
 import { t } from '../i18n.js';
+import { allowed } from '../app.js';
 import { unitValue } from './recipe-lines.js';
 
 const R = () => window.RestoCosting;
@@ -372,8 +373,11 @@ export async function renderLog(ctx) {
   const { el, setTitle, setActions } = ctx;
   setTitle(t('production.logTitle'), { back: true });
   const lctx = { ...ctx, redraw: () => renderLog(ctx) };
-  setActions(html`<button class="icon-btn" id="new-run" aria-label="${t('production.title')}">${icon('plus')}</button>`)
-    .querySelector('#new-run').addEventListener('click', () => produceSheet(lctx, logUi.prep || undefined));
+  const canProduce = allowed('produce');
+  if (canProduce) {
+    setActions(html`<button class="icon-btn" id="new-run" aria-label="${t('production.title')}">${icon('plus')}</button>`)
+      .querySelector('#new-run').addEventListener('click', () => produceSheet(lctx, logUi.prep || undefined));
+  }
   mount(el, html`<div class="skeleton" style="height:84px;margin-top:4px"></div><div class="skeleton" style="height:260px;margin-top:12px"></div>`);
   const from = addDays(today(), -90);
   const runs = await call('production.list', { from, limit: 300 });
@@ -390,8 +394,8 @@ export async function renderLog(ctx) {
 
   if (!runs.length) {
     mount(el, html`<div class="card" style="margin-top:4px">${emptyState('chef', t('production.emptyTitle'), t('production.emptyText'),
-      html`<button class="btn primary" id="first-run">${icon('plus')}${t('production.title')}</button>`)}</div>`);
-    $('#first-run', el).addEventListener('click', () => produceSheet(lctx));
+      canProduce ? html`<button class="btn primary" id="first-run">${icon('plus')}${t('production.title')}</button>` : '')}</div>`);
+    if (canProduce) $('#first-run', el).addEventListener('click', () => produceSheet(lctx));
     return;
   }
   const names = {};

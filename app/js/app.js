@@ -1,7 +1,8 @@
 // App shell: session, routing, navigation, shared state.
-import { call, session, login, logout, setAuthLostHandler } from './api.js';
+import { call, session, login, logout, setAuthLostHandler, joinShop } from './api.js';
 import { html, raw, mount, icon, toast, setFormat, busy, showFormError, today, $ } from './ui.js';
 import { t } from './i18n.js';
+import { renderSignIn } from './signin.js';
 
 // The shop's server: the Supabase function (v2) or, as a fallback, the Apps Script web app.
 const SERVER_URL = /^https:\/\/([a-z0-9-]+\.supabase\.co\/functions\/v1\/|script\.google(usercontent)?\.com\/)/;
@@ -39,6 +40,11 @@ export async function refresh() {
   return boot;
 }
 export function can(role) { return !!state.boot && ROLES[state.boot.user.role] >= ROLES[role]; }
+/** A staff member's permission (sales, stock, receive, produce, close); managers and owners have them all. */
+export function allowed(perm) {
+  const u = state.boot && state.boot.user;
+  return !!u && (u.role !== 'staff' || (u.permissions || []).includes(perm));
+}
 export function navigate(hash) { if (location.hash === hash) render(); else location.hash = hash; }
 export function list(csv) { return String(csv || '').split(',').map((s) => s.trim()).filter(Boolean); }
 
@@ -101,12 +107,23 @@ export async function render() {
   const token = ++renderToken;
   document.querySelectorAll('.fab').forEach((f) => f.remove());
   if (!session.token) { renderLogin(); return; }
+  // Someone already signed in opened a shop QR link: join this phone too, then carry on.
+  if (/^#\/join\//.test(location.hash)) {
+    const raw = decodeURIComponent(location.hash.slice(7));
+    const demo = /\.demo$/.test(raw);
+    if (demo !== (session.mode === 'demo')) {
+      // A QR for the other shop (sample vs real): sign out of this one and join that one.
+      session.clear(); state.boot = null; renderLogin(); return;
+    }
+    history.replaceState(null, '', '#/home');
+    try { await joinShop(demo ? raw.slice(0, -5) : raw); toast(t('signin.phoneJoined')); } catch (e) { toast(e.message, 'bad', 5000); }
+  }
   if (!$('.app')) shell();
   if (!state.boot) {
     mount($('#page'), html`<div class="skeleton" style="height:120px;margin-top:12px"></div>
       <div class="skeleton" style="height:84px;margin-top:12px"></div><div class="skeleton" style="height:220px;margin-top:12px"></div>`);
     try { await refresh(); } catch (e) {
-      if (e.code === 'AUTH') return;
+      if (e.code === 'AUTH' || e.code === 'DEVICE') return;
       mount($('#page'), html`<div class="empty">${icon('wifiOff')}<h3>${t('app.loadFailed')}</h3><div>${e.message}</div>
         <div style="margin-top:16px"><button class="btn primary" id="retry">${icon('refresh')}${t('common.tryAgain')}</button></div></div>`);
       $('#retry').addEventListener('click', render);
@@ -130,7 +147,7 @@ export async function render() {
     await mod.render({ el: page, params, state, setTitle, setActions, refresh, navigate, can, rerender: render,
       stale: () => token !== renderToken });
   } catch (e) {
-    if (e.code === 'AUTH') return;
+    if (e.code === 'AUTH' || e.code === 'DEVICE') return;
     mount(page, html`<div class="empty">${icon('alert')}<h3>${t('app.error')}</h3><div>${e.message}</div>
       <div style="margin-top:16px"><button class="btn" id="retry">${icon('refresh')}${t('common.reload')}</button></div></div>`);
     $('#retry').addEventListener('click', render);
@@ -139,15 +156,26 @@ export async function render() {
 
 /* ----------------------------------------------------------------- login */
 
+/** Staff on a joined phone get their name + PIN; everyone else (and the owner) gets the password form. */
 function renderLogin() {
   state.boot = null;
   document.title = `${t('login.signIn')} · ${t('app.name')}`;
+  renderSignIn(root, {
+    onSignedIn: () => { location.hash = '#/home'; render(); },
+    passwordLogin: renderPasswordLogin,
+  });
+}
+
+function renderPasswordLogin() {
+  state.boot = null;
   mount(root, html`
     <div class="login">
       <div style="display:flex;justify-content:space-between;align-items:flex-start">
         <div class="brand-mark">${icon('plate')}</div></div>
       <h1>${t('app.name')}</h1>
       <p class="lede">${t('login.lede')}</p>
+      ${session.deviceKey ? html`<button class="link-btn" id="to-staff" style="margin:-6px 0 14px">${icon('chevL')} ${t('signin.backToNames')}</button>`
+        : html`<p class="small muted" style="margin:-6px 0 14px">${t('signin.staffHint')}</p>`}
       <form id="login-form" novalidate>
         <label class="field"><span class="label">${t('login.username')}</span>
           <input class="input" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
@@ -167,6 +195,8 @@ function renderLogin() {
 
   const form = $('#login-form');
   const urlInput = $('#api-url');
+  const toStaff = $('#to-staff');
+  if (toStaff) toStaff.addEventListener('click', renderLogin);
   form.addEventListener('submit', (e) => {
     e.preventDefault();
     const btn = form.querySelector('[type=submit]');

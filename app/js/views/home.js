@@ -4,6 +4,7 @@ import { html, mount, icon, money, pct, today, addDays, fmtMonth, fmtDate, timeO
 import { produceSheet } from './production.js';
 import { cashFlowChart, barList } from '../charts.js';
 import { t } from '../i18n.js';
+import { allowed } from '../app.js';
 
 let month = null;
 let anchor = null; // the day shown, or a day in the week shown
@@ -43,13 +44,16 @@ function delta(cur, prev, { lowerIsBetter = false, suffix = t('home.vsLastMonth'
 const tile = (href, ic, label) =>
   html`<a class="action-tile" href="${href}" style="text-decoration:none"><span class="avatar brand">${icon(ic)}</span>${label}</a>`;
 
-const quickActions = (canManage) => html`
-  <div class="actions-grid">
-    ${tile('#/sales/new', 'receipt', t('nav.sales'))}
-    ${tile('#/orders/receive', 'truck', t('po.receive'))}
-    ${tile('#/stock/waste', 'waste', t('type.waste'))}
-    ${canManage ? tile('#/more/expenses/new', 'wallet', t('home.expense')) : tile('#/more/sop', 'clipboard', t('sop.short'))}
-  </div>`;
+const quickActions = (canManage) => {
+  // Only what this person may do (staff permissions); the SOP manual is always there for staff.
+  const tiles = [
+    allowed('sales') && tile('#/sales/new', 'receipt', t('nav.sales')),
+    allowed('receive') && tile('#/orders/receive', 'truck', t('po.receive')),
+    allowed('stock') && tile('#/stock/waste', 'waste', t('type.waste')),
+    canManage ? tile('#/more/expenses/new', 'wallet', t('home.expense')) : tile('#/more/sop', 'clipboard', t('sop.short')),
+  ].filter(Boolean);
+  return html`<div class="actions-grid" style="grid-template-columns:repeat(${tiles.length},minmax(0,1fr))">${tiles}</div>`;
+};
 
 /* ------------------------------------------------------------ today */
 
@@ -62,15 +66,18 @@ const TASK = {
   promotionsEnding: { icon: 'info', cls: '', href: () => '#/menu/promotions' },
   closeYesterday: { icon: 'clipboard', cls: 'bad', href: (x) => `#/close/${x.items[0].date}` },
   backup: { icon: 'download', cls: 'warn', href: () => '#/more/settings' },
+  pinBlocked: { icon: 'users', cls: 'bad', href: () => '#/more/team' },
 };
 
 /** "งานวันนี้": what this person should do now, each row one tap from the place to do it. */
 function todayCard(sum, extra = []) {
   if (!sum) return '';
-  const tasks = [...sum.tasks, ...extra];
+  // Staff see only the jobs they're allowed to do.
+  const NEEDS = { deliveries: 'receive', preps: 'produce', closeYesterday: 'close' };
+  const tasks = [...sum.tasks, ...extra].filter((x) => !NEEDS[x.kind] || allowed(NEEDS[x.kind]));
   const row = (x) => {
     const m = TASK[x.kind] || { icon: 'info', cls: '', href: () => null };
-    const sub = x.kind === 'preps' ? x.items.map((i) => i.name).join(', ')
+    const sub = x.kind === 'preps' || x.kind === 'pinBlocked' ? x.items.map((i) => i.name).join(', ')
       : x.kind === 'promotionsEnding' ? x.items.map((i) => `${i.name} (${fmtDate(i.endDate)})`).join(', ')
         : x.kind === 'closeYesterday' ? fmtDate(x.items[0].date, { weekday: 'long', day: 'numeric', month: 'long' })
           : x.kind === 'backup' ? (x.days === null ? t('today.backupNever') : t('today.backupDays', { n: x.days })) : (x.sub || '');
@@ -87,7 +94,7 @@ function todayCard(sum, extra = []) {
         : html`<div class="row" style="min-height:64px"><span class="avatar good">${icon('check')}</span><span class="grow"><div class="title">${t('today.allClear')}</div><div class="sub">${t('today.allClearSub')}</div></span></div>`}
       <div style="padding:12px 14px;border-top:1px solid var(--line)">
         ${d.closed ? html`<a class="btn block" href="#/close">${icon('check')}${t('today.closed', { who: d.closedBy, time: timeOf(d.closedAt) })}</a>`
-          : html`<a class="btn accent block" href="#/close">${icon('clipboard')}${t('today.closeDay')}</a>`}
+          : allowed('close') ? html`<a class="btn accent block" href="#/close">${icon('clipboard')}${t('today.closeDay')}</a>` : ''}
       </div>
     </div></section>`;
 }

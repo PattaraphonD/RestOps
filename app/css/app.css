@@ -776,3 +776,58 @@ svg.week-chart { width: 100%; height: auto; display: block; vertical-align: base
 .cat-name { background: none; border: 0; padding: 0; margin: 0; font: inherit; color: inherit; text-align: left; cursor: pointer; min-width: 0; }
 .cat-row.retired .title { color: var(--ink-3); text-decoration: line-through; }
 .icon-btn[disabled] { opacity: .3; pointer-events: none; }
+
+/* Staff sign-in: name tiles and PIN pad (big, simple, thumb-friendly) */
+.signin { max-width: 440px; }
+.signin-center { text-align: center; padding-top: 24px; }
+.signin-center h1 { margin: 12px 0 6px; }
+.signin-ok, .signin-warn { width: 72px; height: 72px; border-radius: 50%; display: grid; place-items: center; margin: 0 auto; }
+.signin-ok { background: var(--good-soft); color: var(--good-ink); }
+.signin-warn { background: var(--warn-soft); color: var(--warn-ink); }
+.signin-ok svg, .signin-warn svg { width: 36px; height: 36px; }
+.signin-steps { text-align: left; margin: 16px 0 20px; padding-left: 22px; font-size: 17px; line-height: 1.7; }
+.signin-head { margin: 20px 0 16px; }
+.signin-tiles { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.signin-tile { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 18px 10px; min-height: 140px;
+  border-radius: 18px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; box-shadow: var(--shadow); }
+.signin-tile b { font-size: 18px; }
+.signin-tile:active { transform: scale(.98); }
+.signin-avatar { width: 56px; height: 56px; border-radius: 50%; display: grid; place-items: center; color: #fff; font-size: 24px; font-weight: 800; }
+.signin-avatar.lg { width: 84px; height: 84px; font-size: 36px; margin: 0 auto; }
+.signin-owner { display: block; margin: 22px auto 0; font-size: 15px; }
+.signin-back { margin: 12px 0 0; font-size: 16px; }
+.pin-dots { display: flex; justify-content: center; gap: 14px; margin: 18px 0 8px; }
+.pin-dots i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--brand); }
+.pin-dots i.on { background: var(--brand); }
+.pin-dots.shake { animation: pin-shake .4s; }
+@keyframes pin-shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-10px); } 75% { transform: translateX(10px); } }
+.keypad { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 18px auto 24px; max-width: 320px; }
+.key { height: 68px; border-radius: 50%; width: 68px; justify-self: center; border: 1px solid var(--line); background: var(--surface);
+  font: inherit; font-size: 28px; font-weight: 700; color: var(--ink); cursor: pointer; box-shadow: var(--shadow); display: grid; place-items: center; }
+.key:active { background: var(--brand-soft); }
+.key svg { width: 26px; height: 26px; }
+
+/* Team page: today's QR, people, permissions */
+.team-qr-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 12px; }
+.team-qr-body { display: grid; grid-template-columns: minmax(0, 180px) minmax(0, 1fr); gap: 16px; align-items: center; }
+.team-qr-code { background: #fff; border-radius: 12px; padding: 8px; border: 1px solid var(--line); }
+.team-qr-code svg { width: 100%; height: auto; display: block; }
+.team-qr-steps { margin: 0; padding-left: 20px; line-height: 1.8; }
+@media (max-width: 420px) { .team-qr-body { grid-template-columns: minmax(0, 1fr); } .team-qr-code { max-width: 220px; margin: 0 auto; } }
+.colour-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.colour-dot { width: 34px; height: 34px; border-radius: 50%; border: 3px solid transparent; cursor: pointer; }
+.colour-dot[aria-pressed="true"] { border-color: var(--ink); box-shadow: 0 0 0 2px var(--surface) inset; }
+.perm-list { display: grid; gap: 6px; }
+.check.perm { align-items: flex-start; padding: 8px 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.check.perm span { display: flex; flex-direction: column; }
+.pin-input { letter-spacing: .4em; font-size: 20px; font-weight: 700; }
+@media print {
+  .qr-poster { text-align: center; color: #000; font-size: 16pt; }
+  .qr-poster-shop { font-size: 18pt; font-weight: 700; margin-top: 10mm; }
+  .qr-poster h1 { font-size: 32pt; margin: 6mm 0; }
+  .qr-poster-code { width: 120mm; margin: 0 auto; }
+  .qr-poster-code svg { width: 100%; height: auto; }
+  .qr-poster-date { font-size: 18pt; font-weight: 700; margin: 4mm 0 8mm; }
+  .qr-poster ol { text-align: left; display: inline-block; font-size: 16pt; line-height: 1.8; }
+}
+.pin-input.masked { -webkit-text-security: disc; }

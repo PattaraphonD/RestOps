@@ -8,6 +8,7 @@ import {
 import { t, defaults } from '../i18n.js';
 import { impactToast } from './stock.js';
 import { fmtTaxId, branchLabel } from './more.js';
+import { allowed } from '../app.js';
 
 const ui = { tab: 'orders', poFilter: 'open', invFilter: 'review' };
 
@@ -46,9 +47,9 @@ export async function render(ctx) {
     <div class="actions-grid" style="margin-top:4px;grid-template-columns:repeat(${manager ? 4 : 2},1fr)">
       ${manager ? html`<button class="action-tile" data-act="suggest"><span class="avatar brand">${icon('sliders')}</span>${t('po.reorder')}</button>
         <button class="action-tile" data-act="new"><span class="avatar brand">${icon('plus')}</span>${t('po.newShort')}</button>` : ''}
-      <button class="action-tile" data-act="receive"><span class="avatar brand">${icon('truck')}</span>${t('po.receive')}</button>
+      ${allowed('receive') ? html`<button class="action-tile" data-act="receive"><span class="avatar brand">${icon('truck')}</span>${t('po.receive')}</button>` : ''}
       ${manager ? html`<button class="action-tile" data-act="invoice"><span class="avatar brand">${icon('receipt')}</span>${t('inv.addShort')}</button>`
-        : html`<a class="action-tile" href="#/stock/purchase" style="text-decoration:none"><span class="avatar brand">${icon('box')}</span>${t('po.noOrderStockIn')}</a>`}
+        : allowed('receive') ? html`<a class="action-tile" href="#/stock/purchase" style="text-decoration:none"><span class="avatar brand">${icon('box')}</span>${t('po.noOrderStockIn')}</a>` : ''}
     </div>
     ${manager ? html`<div class="seg" role="group" aria-label="${t('stock.view')}" style="margin-top:18px">
       <button aria-pressed="${ui.tab === 'orders'}" data-tab="orders">${t('po.orders')}</button>

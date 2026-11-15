@@ -5,7 +5,7 @@ import {
   toast, busy, options, emptyState, statusPill, foodCostPill, initials, unitLabel,
   recentIds, pushRecent,
 } from '../ui.js';
-import { list } from '../app.js';
+import { list, allowed } from '../app.js';
 import { t } from '../i18n.js';
 import { sopSheet } from './sop.js';
 import { recipeLines } from './recipe-lines.js';
@@ -34,9 +34,15 @@ const WASTE_REASONS = ['stock.reasonSpoiled', 'stock.reasonExpired', 'stock.reas
 
 const TILE_LABEL = { count: 'stock.countShort', produce: 'stock.produceShort' };
 /** Quick-action tiles in a grid sized to how many there are (five fit one row on a phone). */
-const actionTiles = (types = ['purchase', 'produce', 'usage', 'waste', 'count']) => html`<div class="actions-grid ${types.length > 4 ? 'dense' : ''}"
+// Which staff permission each stock entry needs.
+const ENTRY_PERM = { purchase: 'receive', produce: 'produce', usage: 'stock', waste: 'stock', count: 'stock', adjustment: 'stock' };
+const actionTiles = (all = ['purchase', 'produce', 'usage', 'waste', 'count']) => {
+  const types = all.filter((type) => allowed(ENTRY_PERM[type] || 'stock'));
+  if (!types.length) return '';
+  return html`<div class="actions-grid ${types.length > 4 ? 'dense' : ''}"
   style="grid-template-columns:repeat(${types.length},minmax(0,1fr))">${types.map((type) => html`<button class="action-tile" data-act="${type}">
   <span class="avatar brand">${icon(TYPE_META[type].icon)}</span>${TILE_LABEL[type] ? t(TILE_LABEL[type]) : typeLabel(type)}</button>`)}</div>`;
+};
 
 /** After stock in / receiving: "Pork +8% → 6 dishes cost more, 2 over target", with the dish list one tap away. */
 export function impactToast(ctx, impact) {

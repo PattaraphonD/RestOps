@@ -10,6 +10,7 @@ import { renderLog as production } from './production.js';
 import { renderChannels as channels } from './channels.js';
 import { renderManual as sop } from './sop.js';
 import { renderCategories as categories, categoryField, wireCategoryField } from './categories.js';
+import { renderTeam } from './team.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -17,7 +18,7 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team, settings, account, production, channels, sop, categories };
+  const pages = { expenses, suppliers, team: renderTeam, settings, account, production, channels, sop, categories };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -287,55 +288,6 @@ const BANKS = ['กสิกรไทย', 'ไทยพาณิชย์', '�
 
 /* ----------------------------------------------------------------- team */
 
-function team(ctx) {
-  const { el, setTitle, setActions, state, can } = ctx;
-  setTitle(t('more.team'), { back: true });
-  if (!can('owner')) { mount(el, emptyState('users', t('more.ownersOnly'), t('team.ownersOnlyText'))); return; }
-  setActions(html`<button class="icon-btn" id="new" aria-label="${t('team.new')}">${icon('plus')}</button>`)
-    .querySelector('#new').addEventListener('click', () => userSheet(ctx));
-  const rows = state.boot.users.slice().sort((a, b) => (a.active === b.active ? a.displayName.localeCompare(b.displayName) : a.active ? -1 : 1));
-  mount(el, html`<div class="card" style="margin-top:4px"><ul class="list">${rows.map((u) => html`<li>
-    <button class="row" data-id="${u.id}" style="${u.active ? '' : 'opacity:.55'}">
-      <span class="avatar">${initials(u.displayName)}</span>
-      <span class="grow"><div class="title">${u.displayName}</div><div class="sub">@${u.username}${u.active ? '' : ' · ' + t('team.disabled')}</div></span>
-      <span class="pill ${u.role === 'owner' ? 'brand' : ''}">${roleLabel(u.role)}</span></button></li>`)}</ul></div>
-    <div class="card pad" style="margin-top:14px">${ROLES.slice().reverse().map((r) => html`<p style="margin:0 0 8px"><b>${roleLabel(r)}</b> <span class="muted">— ${roleHelp(r)}</span></p>`)}</div>`);
-  $$('[data-id]', el).forEach((b) => b.addEventListener('click', () => userSheet(ctx, rows.find((u) => u.id === b.dataset.id))));
-}
-
-function userSheet(ctx, item) {
-  const isNew = !item;
-  item = item || { active: true, role: 'staff' };
-  const self = item.id === ctx.state.boot.user.id;
-  openSheet({
-    title: isNew ? t('team.new') : item.displayName,
-    body: html`<form id="f" novalidate>
-      <label class="field"><span class="label">${t('common.name')}</span><input class="input" name="displayName" value="${item.displayName || ''}" maxlength="80"></label>
-      <label class="field"><span class="label">${t('login.username')}</span><input class="input" name="username" value="${item.username || ''}" autocapitalize="none" spellcheck="false" maxlength="40">
-        <span class="hint">${t('team.usernameHint')}</span></label>
-      <label class="field"><span class="label">${t('team.role')}</span><select class="select" name="role">${options(ROLES.slice().reverse().map((r) => ({ value: r, label: `${roleLabel(r)} — ${roleHelp(r)}` })), item.role)}</select></label>
-      <label class="field"><span class="label">${isNew ? t('team.startPassword') : t('team.newPassword')}</span>
-        <input class="input" name="password" type="text" autocomplete="new-password" placeholder="${isNew ? t('team.pwMin') : t('team.pwKeep')}">
-        <span class="hint">${t('team.pwHint')}</span></label>
-      ${isNew ? '' : html`<label class="check"><input type="checkbox" name="active" ${item.active ? raw('checked') : ''} ${self ? raw('disabled') : ''}> ${t('team.canSignIn')}</label>`}
-    </form>`,
-    foot: html`<button class="btn primary block" id="save">${isNew ? t('team.create') : t('common.saveChanges')}</button>`,
-    onMount(el, close) {
-      const form = el.querySelector('#f');
-      el.querySelector('#save').addEventListener('click', (e) => busy(e.currentTarget, async () => {
-        const v = Object.fromEntries(new FormData(form));
-        v.active = isNew || self ? true : form.active.checked;
-        try { await call('users.save', { item: { ...v, id: item.id, version: item.version } }); }
-        catch (err) { if (err.code === 'CONFLICT') await ctx.refresh(); throw err; }
-        close();
-        toast(isNew ? t('team.created') : t('team.saved'));
-        await ctx.refresh();
-        team(ctx);
-      }, form));
-    },
-  });
-}
-
 /* ------------------------------------------------------------- settings */
 
 function settings(ctx) {
@@ -414,7 +366,14 @@ function account(ctx) {
     <section class="section"><div class="section-head"><h2>${t('account.appearance')}</h2></div>
       <div class="seg" role="group" aria-label="${t('account.appearance')}">${['system', 'light', 'dark'].map((th) =>
         html`<button data-theme-opt="${th}" aria-pressed="${theme === th}">${t(`account.theme.${th}`)}</button>`)}</div></section>
-    <section class="section"><div class="section-head"><h2>${t('account.changePassword')}</h2></div>
+    ${u.role !== 'owner' && u.hasPin ? html`<section class="section"><div class="section-head"><h2>${t('account.changePin')}</h2></div>
+      <form id="pinf" class="card pad" novalidate>
+        <label class="field"><span class="label">${t('account.currentPin')}</span><input class="input pin-input masked" name="current" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off"></label>
+        <label class="field"><span class="label">${t('account.newPin')}</span><input class="input pin-input masked" name="next" type="password" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off">
+          <span class="hint">${t('account.pinHint')}</span></label>
+        <button class="btn primary block" type="submit">${t('account.updatePin')}</button>
+      </form></section>` : ''}
+    <section class="section" ${u.role !== 'owner' && u.hasPin ? raw('hidden') : ''}><div class="section-head"><h2>${t('account.changePassword')}</h2></div>
       <form id="pw" class="card pad" novalidate>
         <label class="field"><span class="label">${t('account.currentPw')}</span><input class="input" type="password" name="current" autocomplete="current-password"></label>
         <label class="field"><span class="label">${t('account.newPw')}</span><input class="input" type="password" name="next" autocomplete="new-password" minlength="8">
@@ -430,6 +389,15 @@ function account(ctx) {
     applyTheme();
     $$('[data-theme-opt]', el).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
   }));
+  const pinf = $('#pinf');
+  if (pinf) pinf.addEventListener('submit', (e) => {
+    e.preventDefault();
+    busy(pinf.querySelector('[type=submit]'), async () => {
+      await call('auth.changePin', { current: pinf.current.value, next: pinf.next.value });
+      pinf.reset();
+      toast(t('account.pinUpdated'));
+    }, pinf);
+  });
   const pw = $('#pw');
   pw.addEventListener('submit', (e) => {
     e.preventDefault();

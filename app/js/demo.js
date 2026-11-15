@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v9';
+const KEY = 'ro.demo.db.v10';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -242,8 +242,16 @@ function seed(api, db, lang) {
   as('settings.save', { values: { restaurantName: 'Saffron & Sage', currency: 'THB',
     salesChannels: channels.join(', '), expenseCategories: expCats.join(', '), ingredientCategories: icats.join(', '),
     menuCategories: mcats.join(', '), units: units.join(', ') } });
-  as('users.save', { item: { username: 'manager', displayName: tx('Arthit (Manager)', 'อาทิตย์ (ผู้จัดการ)'), role: 'manager', password: DEMO_PASSWORD } });
-  as('users.save', { item: { username: 'staff', displayName: tx('Ploy (Kitchen)', 'พลอย (ครัว)'), role: 'staff', password: DEMO_PASSWORD } });
+  // Demo team: PINs for signing in on a joined phone (the demo's own QR is under More → ทีมงาน).
+  as('users.save', { item: { username: 'manager', displayName: tx('Arthit (Manager)', 'อาทิตย์ (ผู้จัดการ)'), role: 'manager', password: DEMO_PASSWORD,
+    nickname: tx('Arthit', 'พี่อาทิตย์'), fullName: tx('Arthit Sukjai', 'อาทิตย์ สุขใจ'), position: tx('Restaurant manager', 'ผู้จัดการร้าน'),
+    phone: '081-234-5601', startDate: '2024-03-01', colour: '#4b5d9c', pin: '482915' } });
+  as('users.save', { item: { username: 'staff', displayName: tx('Ploy (Kitchen)', 'พลอย (ครัว)'), role: 'staff', password: DEMO_PASSWORD,
+    nickname: tx('Ploy', 'น้องพลอย'), fullName: tx('Ploy Rakdee', 'พลอย รักดี'), position: tx('Kitchen assistant', 'ผู้ช่วยครัว'),
+    phone: '081-234-5602', startDate: '2025-06-15', colour: '#d06f66', pin: '730264', permissions: ['stock', 'produce', 'receive'] } });
+  as('users.save', { item: { username: 'bon', displayName: tx('Bon (Floor)', 'บอล (หน้าร้าน)'), role: 'staff',
+    nickname: tx('Bon', 'น้องบอล'), fullName: tx('Bon Meesuk', 'บอล มีสุข'), position: tx('Server / cashier', 'พนักงานเสิร์ฟ/แคชเชียร์'),
+    phone: '081-234-5603', startDate: '2025-11-01', colour: '#2f8f4e', pin: '615093', permissions: ['sales', 'close'] } });
 
   // Sales channels: the first bootstrap turns the settings list into records; give them real terms,
   // retire the generic "Delivery" row and add the two delivery apps (rates are typical, not contractual).

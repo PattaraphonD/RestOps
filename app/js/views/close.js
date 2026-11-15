@@ -1,9 +1,10 @@
 // Close the day: the end-of-service routine — sales, waste, a quick count of key items, then close.
 import { call } from '../api.js';
-import { html, mount, icon, money, pct, number, today, fmtDate, timeOf, $$, toast, busy } from '../ui.js';
+import { html, mount, icon, money, pct, number, today, fmtDate, timeOf, $$, toast, busy , emptyState } from '../ui.js';
 import { t } from '../i18n.js';
 import { openSales } from './sales.js';
 import { openEntry } from './stock.js';
+import { allowed } from '../app.js';
 
 const KEY_ITEMS = 10;
 const skipKey = (date, step) => `ro.close.${date}.${step}`;
@@ -22,6 +23,7 @@ export async function render(ctx) {
   const { el, params, setTitle, state } = ctx;
   const date = /^\d{4}-\d{2}-\d{2}$/.test(params[0] || '') && params[0] <= today() ? params[0] : today();
   setTitle(t('close.title'), { back: true, eyebrow: fmtDate(date, { weekday: 'long', day: 'numeric', month: 'long' }) });
+  if (!allowed('close')) { mount(el, emptyState('clipboard', t('perm.noneTitle'), t('perm.noneText'))); return; }
   mount(el, html`<div class="skeleton" style="height:320px;margin-top:8px"></div>`);
   const [sales, waste, counts, status] = await Promise.all([
     call('sales.list', { from: date, to: date }),
@@ -42,7 +44,7 @@ export async function render(ctx) {
     { key: 'count', icon: 'clipboard', done: countRows.length > 0 || skipped(date, 'count') || skipped(date, 'counted'),
       info: countRows.length ? t('close.countInfo', { n: countRows.length }) : skipped(date, 'counted') ? t('close.countMatched')
         : skipped(date, 'count') ? t('close.countSkipped') : t('close.countPending', { n: keyItems(boot).length }) },
-  ];
+  ].filter((s) => s.key === 'sales' || allowed('stock'));   // waste and the count need the stock permission
   const ready = steps.filter((s) => s.done).length;
   const redraw = () => render(ctx);
 

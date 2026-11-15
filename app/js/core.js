@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.1.0';
+  var VERSION = '2.2.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -21,7 +21,11 @@ var RestoCore = (function () {
   var SCHEMA = {
     Settings: ['key', 'value', 'updatedAt', 'updatedBy'],
     Users: ['id', 'username', 'displayName', 'role', 'passwordHash', 'salt', 'active',
-      'createdAt', 'updatedAt', 'updatedBy', 'version'],
+      'createdAt', 'updatedAt', 'updatedBy', 'version',
+      // team profile, PIN sign-in and permissions (v2.2)
+      'nickname', 'fullName', 'position', 'phone', 'startDate', 'colour', 'permissions', 'pinHash', 'pinSalt', 'pinSetAt',
+      // locked by repeated wrong PINs until the owner sets a new one
+      'pinBlocked'],
     // New columns are always APPENDED so existing sheets upgrade in place (Server.gs adds them).
     Suppliers: ['id', 'name', 'contactName', 'phone', 'email', 'notes', 'active',
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'leadTimeDays', 'paymentTermsDays',
@@ -79,6 +83,8 @@ var RestoCore = (function () {
     DayCloses: ['id', 'date', 'closedBy', 'closedAt', 'salesTotal', 'wasteValue', 'countLines', 'note'],
     // Managed category lists for ingredients, dishes and expenses (v2.1).
     Categories: ['id', 'type', 'name', 'sortOrder', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
+    // Phones joined to the shop with the daily QR; the device key is stored hashed (v2.2).
+    Devices: ['id', 'tokenHash', 'nameHint', 'joinedAt', 'lastUsedAt', 'lastUserId', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
     // Who sells an ingredient, in what pack and at what price; one preferred per ingredient (v2.1).
     SupplierItems: ['id', 'supplierId', 'ingredientId', 'supplierCode', 'packName', 'packQty', 'packPrice', 'minPacks', 'preferred',
       'active', 'createdAt', 'updatedAt', 'updatedBy', 'version']
@@ -88,7 +94,7 @@ var RestoCore = (function () {
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -352,6 +358,22 @@ var RestoCore = (function () {
     [/^Unknown cost method\.$/, 'ไม่รู้จักวิธีคิดต้นทุน'],
     [/^Unknown period\.$/, 'ไม่รู้จักช่วงเวลานี้'],
     [/^Unknown category type\.$/, 'ไม่รู้จักประเภทหมวดหมู่นี้'],
+    [/^This QR code has expired\. Ask the owner for today's code\.$/, 'QR นี้หมดอายุแล้ว ขอ QR ของวันนี้จากเจ้าของร้าน'],
+    [/^This phone is no longer connected to the shop\. Scan today's shop QR again\.$/, 'โทรศัพท์เครื่องนี้ไม่ได้เชื่อมกับร้านแล้ว สแกน QR ร้านของวันนี้อีกครั้ง'],
+    [/^Wrong PIN\.$/, 'รหัส PIN ไม่ถูกต้อง'],
+    [/^Too many wrong PINs\. Try again in 15 minutes or ask the owner to reset your PIN\.$/, 'ใส่ PIN ผิดหลายครั้งเกินไป ลองใหม่ใน 15 นาที หรือให้เจ้าของร้านรีเซ็ต PIN'],
+    [/^PIN must be exactly 6 digits\.$/, 'PIN ต้องเป็นตัวเลข 6 หลัก'],
+    [/^Choose a PIN that is harder to guess \(not 111111 or 123456\)\.$/, 'ตั้ง PIN ที่เดายากกว่านี้ (ห้ามใช้ 111111 หรือ 123456)'],
+    [/^Don't use the last 6 digits of the phone number as the PIN\.$/, 'ห้ามใช้ 6 หลักท้ายของเบอร์โทรเป็น PIN'],
+    [/^Another team member already uses this PIN\. Choose a different one\.$/, 'PIN นี้มีคนในทีมใช้อยู่แล้ว เลือก PIN อื่น'],
+    [/^The owner signs in with a password, not a PIN\.$/, 'เจ้าของร้านเข้าสู่ระบบด้วยรหัสผ่าน ไม่ใช้ PIN'],
+    [/^Choose a colour from the list\.$/, 'เลือกสีจากรายการ'],
+    [/^Unknown permission\.$/, 'ไม่รู้จักสิทธิ์นี้'],
+    [/^You don't have permission for this\. Ask the owner to turn it on\.$/, 'คุณไม่มีสิทธิ์ทำรายการนี้ ให้เจ้าของร้านเปิดสิทธิ์ให้'],
+    [/^Your current PIN is wrong\.$/, 'PIN ปัจจุบันไม่ถูกต้อง'],
+    [/^Too many wrong PINs on this phone\. Wait an hour or ask the owner\.$/, 'โทรศัพท์เครื่องนี้ใส่ PIN ผิดหลายครั้งเกินไป รอ 1 ชั่วโมง หรือแจ้งเจ้าของร้าน'],
+    [/^Too many wrong PINs today\. Ask the owner to set a new PIN\.$/, 'วันนี้ใส่ PIN ผิดหลายครั้งเกินไป ให้เจ้าของร้านตั้ง PIN ใหม่ให้'],
+    [/^Set a password for an owner\.$/, 'เจ้าของร้านต้องมีรหัสผ่าน ตั้งรหัสผ่านก่อน'],
     [/^Pack size must be more than 0\.$/, 'ขนาดแพ็กต้องมากกว่า 0'],
     [/^([\s\S]+) is sold in packs measured in ([\s\S]+)\. Change or remove those packs before changing the unit\.$/, '$1 มีแหล่งซื้อเป็นแพ็กที่วัดเป็น $2 แก้ไขหรือลบแพ็กเหล่านั้นก่อนเปลี่ยนหน่วย'],
     [/^Line (\d+): order whole packs\.$/, 'บรรทัดที่ $1: สั่งเป็นจำนวนแพ็กเต็ม'],
@@ -466,10 +488,12 @@ var RestoCore = (function () {
     /* ---------- reads ---------- */
 
     var writeDepth = 0;   // > 0 while a write action runs inside db.lock
+    /** Keys the server keeps to itself: never in bootstrap, reports or backups. */
+    var INTERNAL_SETTINGS = { staffJoinSecret: true };
     function settings() {
       var out = {};
       for (var k in DEFAULT_SETTINGS) out[k] = DEFAULT_SETTINGS[k];
-      db.read('Settings').forEach(function (r) { if (r.key) out[r.key] = trim(r.value); });
+      db.read('Settings').forEach(function (r) { if (r.key && !INTERNAL_SETTINGS[r.key]) out[r.key] = trim(r.value); });
       return out;
     }
     function active(rows) { return rows.filter(function (r) { return bool(r.active); }); }
@@ -668,9 +692,21 @@ var RestoCore = (function () {
       }).sort(function (a, b) { return a.name.localeCompare(b.name); });
     }
 
+    /** What a staff member may record (v2.2). Managers and owners can do everything their role allows. */
+    var PERMISSIONS = ['sales', 'stock', 'receive', 'produce', 'close'];
+    var PERMISSION_OF = { 'sales.add': 'sales', 'movements.add': 'stock', 'purchases.add': 'receive', 'po.receive': 'receive',
+      'production.add': 'produce', 'day.close': 'close' };
+    /** A staff member with no list (accounts from before v2.2) keeps every staff permission. */
+    function permissionsOf(u) {
+      if (u.role !== 'staff' || !trim(u.permissions)) return PERMISSIONS.slice();
+      return list(u.permissions).filter(function (x) { return PERMISSIONS.indexOf(x) >= 0; });
+    }
+
     function publicUser(u) {
       return { id: u.id, username: u.username, displayName: u.displayName || u.username, role: u.role,
-        active: bool(u.active), version: num(u.version) };
+        active: bool(u.active), version: num(u.version),
+        nickname: u.nickname || '', fullName: u.fullName || '', position: u.position || '', phone: u.phone || '',
+        startDate: trim(u.startDate), colour: u.colour || '', hasPin: !!trim(u.pinHash), permissions: permissionsOf(u) };
     }
 
     /* ---------- generic master-data save with optimistic concurrency ---------- */
@@ -745,6 +781,16 @@ var RestoCore = (function () {
       if (!user || !bool(user.active)) {
         env.sessions.remove('s:' + token);
         fail('AUTH', 'Your account is no longer active.');
+      }
+      // A PIN sign-in belongs to the phone it was made on: removing that phone ends it.
+      var devId = env.sessions.get('sdev:' + token);
+      if (devId) {
+        var dev = db.read('Devices').filter(function (d) { return d.id === devId; })[0];
+        if (!dev || !bool(dev.active)) {
+          env.sessions.remove('s:' + token); env.sessions.remove('sdev:' + token);
+          fail('DEVICE', "This phone is no longer connected to the shop. Scan today's shop QR again.");
+        }
+        env.sessions.put('sdev:' + token, devId, SESSION_TTL_SECONDS);
       }
       env.sessions.put('s:' + token, userId, SESSION_TTL_SECONDS); // slide expiry
       return user;
@@ -1964,7 +2010,10 @@ var RestoCore = (function () {
       var ts = nowIso(), tables = {}, counts = {};
       Object.keys(SCHEMA).forEach(function (t) {
         var rows = db.read(t);
-        if (t === 'Users') rows = rows.map(function (u) { var c = {}; for (var k in u) c[k] = u[k]; c.passwordHash = ''; c.salt = ''; return c; });
+        var blank = function (fields) { return function (r) { var c = {}; for (var k in r) c[k] = r[k]; fields.forEach(function (f) { c[f] = ''; }); return c; }; };
+        if (t === 'Users') rows = rows.map(blank(['passwordHash', 'salt', 'pinHash', 'pinSalt']));
+        if (t === 'Devices') rows = rows.map(blank(['tokenHash']));
+        if (t === 'Settings') rows = rows.filter(function (r) { return !INTERNAL_SETTINGS[r.key]; });
         tables[t] = rows;
         counts[t] = rows.length;
       });
@@ -2019,6 +2068,8 @@ var RestoCore = (function () {
           { key: 'team', done: active(db.read('Users')).some(function (u) { return u.role !== 'owner'; }) }
         ];
         setup = { done: steps.filter(function (x) { return x.done; }).length, total: steps.length, steps: steps };
+        var blocked = active(db.read('Users')).filter(function (u) { return bool(u.pinBlocked); });
+        if (blocked.length) tasks.push({ kind: 'pinBlocked', n: blocked.length, items: blocked.map(function (u) { return { id: u.id, name: staffName(u) }; }) });
         // Backups: the free database keeps none, so remind the owner after a month (once there is data).
         var hasData = db.read('Ingredients').length || db.read('Menu').length || db.read('Sales').length;
         if (hasData) {
@@ -2962,6 +3013,163 @@ var RestoCore = (function () {
     } };
 
     /* Team & settings */
+    /* ---------- team: daily shop QR, joined phones, PIN sign-in ---------- */
+
+    var PIN_LOCKOUT_SECONDS = 15 * 60;
+    var DEVICE_MAX_WRONG = 20;      // wrong PINs per phone per hour (above one person's 3 lockouts)
+    var PIN_DAILY_LOCKOUTS = 3;     // lockouts in a day before the owner must set a new PIN
+    var JOIN_SECRET = 'staffJoinSecret';
+    var PIN_ROLES = { manager: true, staff: true };   // the owner always uses the password
+
+    function joinSecret(user, create) {
+      var row = db.read('Settings').filter(function (r) { return r.key === JOIN_SECRET; })[0];
+      if (row && trim(row.value)) return trim(row.value);
+      if (!create) return '';
+      var secret = env.uuid().replace(/-/g, '') + env.uuid().replace(/-/g, '');
+      putSetting(JOIN_SECRET, secret, user);
+      return secret;
+    }
+    /** Today's join code: 20 hex characters derived from the shop's secret and the date. */
+    function joinCodeFor(date, secret) { return hashPassword(date, secret).slice(0, 20); }
+
+    /** The joined phone for a device key, or AUTH. */
+    function deviceByKey(key) {
+      key = trim(key);
+      var dev = /^[0-9a-f]{48}$/.test(key) ? active(db.read('Devices')).filter(function (d) {
+        return d.tokenHash === hashPassword(key, 'device');
+      })[0] : null;
+      if (!dev) fail('DEVICE', "This phone is no longer connected to the shop. Scan today's shop QR again.");
+      return dev;
+    }
+    function staffName(u) { return trim(u.nickname) || u.displayName || u.username; }
+
+    /** Phone scans today's QR (public): a long-lived device key for this phone. */
+    function joinShop(p) {
+      var m = /^(\d{4}-\d{2}-\d{2})\.([0-9a-f]{20})$/.exec(trim(p.code));
+      var server = todayStr();
+      var expired = function () { fail('AUTH', "This QR code has expired. Ask the owner for today's code."); };
+      if (!m) expired();
+      // The shop's date is the server's UTC date or the next day (Thailand is 7 hours ahead).
+      if ([server, addDays(server, 1)].indexOf(m[1]) < 0) expired();
+      var secret = joinSecret(null, false);
+      if (!secret || joinCodeFor(m[1], secret) !== m[2]) expired();
+      var key = (env.uuid() + env.uuid()).replace(/-/g, '').slice(0, 48);
+      var ts = nowIso();
+      db.append('Devices', [{ id: newId('DEV'), tokenHash: hashPassword(key, 'device'), nameHint: optStr(p.nameHint, 80), joinedAt: ts,
+        lastUsedAt: ts, lastUserId: '', active: true, createdAt: ts, updatedAt: ts, updatedBy: 'join', version: 1 }]);
+      return { deviceKey: key, shopName: settings().restaurantName };
+    }
+
+    /** Names on a joined phone's sign-in screen (public): active managers and staff who have a PIN. */
+    function roster(p) {
+      deviceByKey(p.deviceKey);
+      var staff = active(db.read('Users')).filter(function (u) { return PIN_ROLES[u.role] && trim(u.pinHash); }).map(function (u) {
+        return { id: u.id, name: staffName(u), position: u.position || '', colour: u.colour || '', role: u.role };
+      }).sort(function (a, b) { return a.name.localeCompare(b.name, 'th'); });
+      return { shopName: settings().restaurantName, staff: staff };
+    }
+
+    /** Name + PIN on a joined phone (public). 5 wrong PINs lock that person for 15 minutes. */
+    function pinLogin(p) {
+      var dev = deviceByKey(p.deviceKey);
+      var user = active(db.read('Users')).filter(function (u) { return u.id === trim(p.userId); })[0];
+      if (!user || !PIN_ROLES[user.role] || !trim(user.pinHash)) fail('AUTH', 'Wrong PIN.');
+      if (bool(user.pinBlocked)) fail('LOCKED', 'Too many wrong PINs today. Ask the owner to set a new PIN.');
+      // One phone can't keep guessing: 20 wrong PINs in an hour, for anyone, suspend the phone for the hour.
+      var devKey = 'devfail:' + dev.id;
+      var devFails = num(env.sessions.get(devKey));
+      if (devFails >= DEVICE_MAX_WRONG) fail('DEVICE', 'Too many wrong PINs on this phone. Wait an hour or ask the owner.');
+      var failKey = 'pinfail:' + user.id;
+      var fails = num(env.sessions.get(failKey));
+      if (fails >= MAX_FAILED_LOGINS) fail('LOCKED', 'Too many wrong PINs. Try again in 15 minutes or ask the owner to reset your PIN.');
+      if (hashPassword(String(p.pin || ''), user.pinSalt) !== user.pinHash) {
+        env.sessions.put(devKey, String(devFails + 1), 60 * 60);
+        env.sessions.put(failKey, String(fails + 1), PIN_LOCKOUT_SECONDS);
+        if (fails + 1 >= MAX_FAILED_LOGINS) {
+          // Locked out a third time today: blocked until the owner sets a new PIN (Home tells the owner).
+          var dayKey = 'pinlockday:' + user.id + ':' + todayStr();
+          var lockouts = num(env.sessions.get(dayKey)) + 1;
+          env.sessions.put(dayKey, String(lockouts), 24 * 60 * 60);
+          if (lockouts >= PIN_DAILY_LOCKOUTS) db.updateWhere('Users', function (r) { return r.id === user.id; }, { pinBlocked: true });
+        }
+        fail('AUTH', 'Wrong PIN.');
+      }
+      env.sessions.remove(failKey);
+      var token = env.uuid().replace(/-/g, '') + env.uuid().replace(/-/g, '');
+      env.sessions.put('s:' + token, user.id, SESSION_TTL_SECONDS);
+      env.sessions.put('sdev:' + token, dev.id, SESSION_TTL_SECONDS);
+      db.updateWhere('Devices', function (d) { return d.id === dev.id; }, { lastUsedAt: nowIso(), lastUserId: user.id });
+      return { token: token, user: publicUser(user) };
+    }
+
+    /** Checks a new PIN for a user: 6 digits, not easy to guess, not someone else's, not their phone number. */
+    function checkPin(pin, userId, phone, unique) {
+      pin = String(pin || '');
+      if (!/^\d{6}$/.test(pin)) fail('VALIDATION', 'PIN must be exactly 6 digits.');
+      var digits = pin.split('').map(Number);
+      var same = digits.every(function (d) { return d === digits[0]; });
+      var up = digits.every(function (d, i) { return i === 0 || d === (digits[i - 1] + 1) % 10; });
+      var down = digits.every(function (d, i) { return i === 0 || d === (digits[i - 1] + 9) % 10; });
+      if (same || up || down) fail('VALIDATION', 'Choose a PIN that is harder to guess (not 111111 or 123456).');
+      var tel = String(phone || '').replace(/\D/g, '');
+      if (tel.length >= 6 && tel.slice(-6) === pin) fail('VALIDATION', "Don't use the last 6 digits of the phone number as the PIN.");
+      var taken = unique !== false && active(db.read('Users')).some(function (u) {
+        return u.id !== userId && trim(u.pinHash) && hashPassword(pin, u.pinSalt) === u.pinHash;
+      });
+      if (taken) fail('VALIDATION', 'Another team member already uses this PIN. Choose a different one.');
+      return pin;
+    }
+    function setPin(userId, pin) {
+      var salt = env.uuid().replace(/-/g, '');
+      db.updateWhere('Users', function (r) { return r.id === userId; },
+        { pinSalt: salt, pinHash: hashPassword(pin, salt), pinSetAt: nowIso(), pinBlocked: false, updatedAt: nowIso() });
+      env.sessions.remove('pinfail:' + userId);
+    }
+
+    A['team.joinCode'] = { role: 'owner', write: true, fn: function (p, user) {
+      var date = p.today ? reqDate(p.today, 'Today') : todayStr();
+      var code = joinCodeFor(date, joinSecret(user, true));
+      return { date: date, code: code, path: '#/join/' + date + '.' + code };
+    } };
+
+    A['users.resetPin'] = { role: 'owner', write: true, fn: function (p) {
+      var u = findOrFail('Users', p.id, 'User');
+      if (!PIN_ROLES[u.role]) fail('VALIDATION', 'The owner signs in with a password, not a PIN.');
+      setPin(u.id, checkPin(p.pin, u.id, u.phone));
+      return { id: u.id, hasPin: true };
+    } };
+
+    A['auth.changePin'] = { role: 'staff', write: true, fn: function (p, user) {
+      if (!PIN_ROLES[user.role]) fail('VALIDATION', 'The owner signs in with a password, not a PIN.');
+      if (trim(user.pinHash) && hashPassword(String(p.current || ''), user.pinSalt) !== user.pinHash) fail('VALIDATION', 'Your current PIN is wrong.');
+      // No "someone else uses this PIN" check here: it would let staff discover other people's PINs.
+      setPin(user.id, checkPin(p.next, user.id, user.phone, false));
+      return { hasPin: true };
+    } };
+
+    A['team.devices'] = { role: 'owner', write: false, fn: function () {
+      var users = byId(db.read('Users'));
+      return active(db.read('Devices')).map(function (d) {
+        var u = users[d.lastUserId];
+        return { id: d.id, nameHint: d.nameHint || '', joinedAt: d.joinedAt, lastUsedAt: d.lastUsedAt || '',
+          lastUserName: u ? staffName(u) : '' };
+      }).sort(function (a, b) { return String(b.lastUsedAt).localeCompare(String(a.lastUsedAt)); });
+    } };
+
+    A['team.removeDevice'] = { role: 'owner', write: true, fn: function (p, user) {
+      var d = findOrFail('Devices', p.id, 'Phone');
+      db.updateWhere('Devices', function (r) { return r.id === d.id; },
+        { active: false, updatedAt: nowIso(), updatedBy: user.username, version: num(d.version) + 1 });
+      return { id: d.id, active: false };
+    } };
+
+    A['team.resetDevices'] = { role: 'owner', write: true, fn: function (p, user) {
+      var ts = nowIso(), n = active(db.read('Devices')).length;
+      db.updateWhere('Devices', function (r) { return bool(r.active); }, { active: false, updatedAt: ts, updatedBy: user.username });
+      putSetting(JOIN_SECRET, env.uuid().replace(/-/g, '') + env.uuid().replace(/-/g, ''), user);
+      return { removed: n };
+    } };
+
     A['users.save'] = { role: 'owner', write: true, fn: function (p, user) {
       var d = p.item || {};
       var role = trim(d.role);
@@ -2970,6 +3178,22 @@ var RestoCore = (function () {
       if (!/^[a-z0-9._-]{3,40}$/.test(username)) fail('VALIDATION', 'Username: 3–40 letters, numbers, dots, dashes or underscores.');
       var data = { id: trim(d.id), version: d.version, username: username, displayName: reqStr(d.displayName, 'Name', 80),
         role: role, active: d.active === undefined ? true : bool(d.active) };
+      ['nickname', 'fullName', 'position'].forEach(function (k) { if (d[k] !== undefined) data[k] = optStr(d[k], 80); });
+      if (d.phone !== undefined) data.phone = optStr(d.phone, 40);
+      if (d.startDate !== undefined) data.startDate = trim(d.startDate) ? reqDate(d.startDate, 'Start date') : '';
+      if (d.colour !== undefined) {
+        data.colour = trim(d.colour);
+        if (data.colour && !/^#[0-9a-fA-F]{6}$/.test(data.colour)) fail('VALIDATION', 'Choose a colour from the list.');
+      }
+      if (d.permissions !== undefined) {
+        var perms = (Array.isArray(d.permissions) ? d.permissions : list(d.permissions)).map(trim).filter(Boolean);
+        perms.forEach(function (x) { if (PERMISSIONS.indexOf(x) < 0) fail('VALIDATION', 'Unknown permission.'); });
+        // Kept in a fixed order; an empty choice is stored as "none" so it doesn't mean "everything".
+        data.permissions = PERMISSIONS.filter(function (x) { return perms.indexOf(x) >= 0; }).join(',') || 'none';
+      }
+      var pin = trim(d.pin);
+      if (pin && role === 'owner') fail('VALIDATION', 'The owner signs in with a password, not a PIN.');
+      if (pin) checkPin(pin, trim(d.id), data.phone !== undefined ? data.phone : '');
       assertUnique('Users', 'username', username, data.id, 'Username');
       if (data.id) {
         var current = findOrFail('Users', data.id, 'User');
@@ -2977,14 +3201,18 @@ var RestoCore = (function () {
         if (current.role === 'owner' && (role !== 'owner' || !data.active) && !owners.length) {
           fail('VALIDATION', 'There must always be at least one active owner.');
         }
+        if (role === 'owner' && !(current && trim(current.passwordHash)) && !d.password) fail('VALIDATION', 'Set a password for an owner.');
         var saved = saveRow('Users', 'USR', data, user, 'User "' + username + '"');
         if (d.password) setPassword(saved.id, d.password);
+        if (pin) setPin(saved.id, pin);
         return publicUser(saved);
       }
-      if (!d.password) fail('VALIDATION', 'Set a starting password for the new user.');
+      // Managers and staff may start with a PIN only; the owner always needs a password.
+      if (!d.password && !(pin && PIN_ROLES[role])) fail('VALIDATION', 'Set a starting password for the new user.');
       delete data.id;
       var created = saveRow('Users', 'USR', data, user, 'User');
-      setPassword(created.id, d.password);
+      if (d.password) setPassword(created.id, d.password);
+      if (pin) setPin(created.id, pin);
       return publicUser(created);
     } };
 
@@ -3013,6 +3241,9 @@ var RestoCore = (function () {
       var def = A[action];
       if (!def) fail('BAD_REQUEST', 'Unknown action: ' + action);
       if (ROLES[user.role] < ROLES[def.role]) fail('FORBIDDEN', 'Your role (' + user.role + ') cannot do this. Ask a ' + def.role + '.');
+      if (user.role === 'staff' && PERMISSION_OF[action] && permissionsOf(user).indexOf(PERMISSION_OF[action]) < 0) {
+        fail('FORBIDDEN', "You don't have permission for this. Ask the owner to turn it on.");
+      }
       var rid = req && req.requestId ? 'rq:' + user.id + ':' + String(req.requestId).slice(0, 64) : '';
       var run = function () {
         // A retried save (same requestId) returns the first result instead of saving twice.
@@ -3036,6 +3267,9 @@ var RestoCore = (function () {
         req = req || {};
         var data;
         if (req.action === 'auth.login') data = db.lock(function () { return login(req.payload || {}); });
+        else if (req.action === 'auth.join') data = db.lock(function () { return joinShop(req.payload || {}); });
+        else if (req.action === 'auth.pinLogin') data = db.lock(function () { return pinLogin(req.payload || {}); });
+        else if (req.action === 'staff.roster') data = roster(req.payload || {});
         else data = execute(req.action, req.payload, userFromToken(req.token), req);
         return { ok: true, data: data };
       } catch (e) {
@@ -3079,7 +3313,8 @@ var RestoCore = (function () {
       initialize: initialize,
       /** Whether an action saves data, and the lowest role allowed (used by the Supabase server). */
       actionInfo: function (action) {
-        if (action === 'auth.login') return { write: true, role: 'staff' };
+        if (action === 'auth.login' || action === 'auth.join' || action === 'auth.pinLogin') return { write: true, role: 'staff' };
+        if (action === 'staff.roster') return { write: false, role: 'staff' };
         var def = A[action];
         return def ? { write: !!def.write, role: def.role } : null;
       }

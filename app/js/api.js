@@ -2,7 +2,10 @@
 // or to the in-browser demo backend.
 import { t, getLang } from './i18n.js';
 
-const K = { token: 'ro.token', user: 'ro.user', url: 'ro.apiUrl', mode: 'ro.mode' };
+const K = { token: 'ro.token', user: 'ro.user', url: 'ro.apiUrl', mode: 'ro.mode', device: 'ro.deviceKey', lastStaff: 'ro.lastStaff' };
+// Sign-in actions that answer AUTH for a wrong PIN or an old QR: not a lost session.
+const PUBLIC_ACTIONS = ['auth.login', 'auth.join', 'auth.pinLogin', 'staff.roster'];
+const localToday = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
 const TIMEOUT_MS = 45000;
 
 const store = {
@@ -18,6 +21,10 @@ export const session = {
   get token() { return store.get(K.token); },
   get user() { try { return JSON.parse(store.get(K.user) || 'null'); } catch { return null; } },
   get mode() { return store.get(K.mode) || 'remote'; },
+  /** This phone's key from the daily shop QR (one per mode, so the demo never mixes with the real shop). */
+  get deviceKey() { return store.get(`${K.device}:${this.mode}`); },
+  setDeviceKey(key) { store.set(`${K.device}:${this.mode}`, key || null); },
+  get lastStaffId() { return store.get(K.lastStaff); },
   /** The shop's address from config.js, unless this phone was given a different one. */
   get defaultApiUrl() { return (window.RESTO_CONFIG && window.RESTO_CONFIG.apiUrl) || ''; },
   get apiUrl() {
@@ -82,7 +89,9 @@ export async function call(action, payload = {}, opts = {}) {
   }
   if (!res || !res.ok) {
     const err = new ApiError(res?.error?.code || 'SERVER', res?.error?.message || t('err.unknown'));
-    if (err.code === 'AUTH' && action !== 'auth.login' && onAuthLost) onAuthLost(err);
+    // DEVICE: this phone was removed from the shop (or is suspended): forget it, back to "scan the QR".
+    if (err.code === 'DEVICE' && /no longer connected|เชื่อม/.test(err.message)) forgetDevice();
+    if ((err.code === 'AUTH' || err.code === 'DEVICE') && !PUBLIC_ACTIONS.includes(action) && onAuthLost) onAuthLost(err);
     throw err;
   }
   return res.data;
@@ -104,3 +113,24 @@ export async function resetDemo() {
   resetDemoData();
   demoTransport = null;
 }
+
+/** Joins this phone to the shop with the code from today's shop QR. */
+export async function joinShop(code) {
+  const data = await call('auth.join', { code, today: localToday(), nameHint: navigator.userAgent.slice(0, 80) });
+  session.setDeviceKey(data.deviceKey);
+  return data;
+}
+
+/** The names on this phone's sign-in screen. */
+export function getRoster() { return call('staff.roster', { deviceKey: session.deviceKey }); }
+
+/** Sign in by name + PIN on a joined phone. */
+export async function pinLogin(userId, pin) {
+  const data = await call('auth.pinLogin', { deviceKey: session.deviceKey, userId, pin });
+  session.save(data.token, data.user);
+  store.set(K.lastStaff, userId);
+  return data.user;
+}
+
+/** The shop removed this phone (or reset all phones): forget its key. */
+export function forgetDevice() { session.setDeviceKey(null); }
