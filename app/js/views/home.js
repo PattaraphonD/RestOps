@@ -67,9 +67,31 @@ const TASK = {
   closeYesterday: { icon: 'clipboard', cls: 'bad', href: (x) => `#/close/${x.items[0].date}` },
   backup: { icon: 'download', cls: 'warn', href: () => '#/more/settings' },
   pinBlocked: { icon: 'users', cls: 'bad', href: () => '#/more/team' },
+  schedulePublish: { icon: 'calendar', cls: 'warn', href: (x) => `#/more/schedule/${x.items[0].weekStart}` },
 };
 
 /** "งานวันนี้": what this person should do now, each row one tap from the place to do it. */
+/** "กะของฉัน": today's shift (or a day off) and the next one, from the published schedule. */
+function myShiftCard(sh) {
+  if (!sh || (!sh.today && !sh.next)) return '';
+  const span = (s) => `${s.startTime}–${s.endTime}`;
+  const s = sh.today;
+  return html`<a class="card pad my-shift" href="#/more/schedule">
+    <div class="label small muted">${icon('calendar')}${t('sched.myShiftToday')}</div>
+    ${s ? html`<div class="big">${span(s)}</div>
+      <div class="sub">${[s.templateName, s.breakMinutes ? t('sched.breakN', { n: s.breakMinutes }) : '',
+        s.coworkers.length ? t('sched.withPeople', { names: s.coworkers.map((c) => c.name).join(', ') }) : ''].filter(Boolean).join(' · ')}</div>`
+      : html`<div class="big off">${t('sched.dayOff')}</div>`}
+    ${sh.next ? html`<div class="next small">${t('sched.nextShift', { day: fmtDate(sh.next.date, { weekday: 'long', day: 'numeric', month: 'short' }), time: span(sh.next) })}</div>` : ''}
+  </a>`;
+}
+/** "วันนี้ใครเข้างาน" for whoever runs the shop. */
+function onTodayCard(sh) {
+  if (!sh || !sh.onToday.length) return '';
+  return html`<section class="section"><div class="section-head"><h2>${t('sched.onToday')}</h2><a class="link" href="#/more/schedule">${t('sched.title')}</a></div>
+    <div class="card pad on-today">${sh.onToday.map((p) => html`<span class="who-chip"><b>${p.name}</b>${p.startTime}–${p.endTime}</span>`)}</div></section>`;
+}
+
 function todayCard(sum, extra = []) {
   if (!sum) return '';
   // Staff see only the jobs they're allowed to do.
@@ -193,7 +215,8 @@ export async function render(ctx) {
 
   mount($('#dash'), html`
     ${isCurrent && sum ? html`${setupCard(sum.setup)}
-    ${todayCard(sum, r.purchasing && r.purchasing.overdue ? [{ kind: 'overdueBills', n: r.purchasing.overdue, sub: money(r.payables.overdue) }] : [])}` : ''}
+    ${todayCard(sum, r.purchasing && r.purchasing.overdue ? [{ kind: 'overdueBills', n: r.purchasing.overdue, sub: money(r.payables.overdue) }] : [])}
+    ${myShiftCard(sum.shifts)}${onTodayCard(sum.shifts)}` : ''}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${t('home.revenue')} · ${fmtMonth(month, false)}</div>
         <div class="val tabular">${money(tot.revenue, { cents: false })}</div>
@@ -317,7 +340,7 @@ async function renderPeriod(ctx, period, date) {
   const dayShort = fmtDate(date, { day: 'numeric', month: 'short' });
 
   mount($('#dash'), html`
-    ${sum ? html`${setupCard(sum.setup)}${todayCard(sum)}` : ''}
+    ${sum ? html`${setupCard(sum.setup)}${todayCard(sum)}${myShiftCard(sum.shifts)}${onTodayCard(sum.shifts)}` : ''}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${heroLabel}</div>
         <div class="val tabular">${money(tot.revenue, { cents: false })}</div>
@@ -434,6 +457,7 @@ async function renderStaff(ctx) {
   if (stale() || !$('#staff')) return;
   const low = boot.ingredients.filter((i) => i.active && i.status !== 'ok');
   mount($('#staff'), html`
+    ${sum ? myShiftCard(sum.shifts) : ''}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${t('home.todaySales')}</div>
         <div class="val">${money(s.total, { cents: false })}</div><div class="delta">${t('home.itemsSold', { n: s.dishes })}</div></div>

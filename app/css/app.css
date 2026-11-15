@@ -831,3 +831,97 @@ svg.week-chart { width: 100%; height: auto; display: block; vertical-align: base
   .qr-poster ol { text-align: left; display: inline-block; font-size: 16pt; line-height: 1.8; }
 }
 .pin-input.masked { -webkit-text-security: disc; }
+
+/* ---------- shift schedule (v2.3) ---------- */
+.sched-head .sched-status { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 12px 0 10px; flex-wrap: wrap; }
+.sched-head .sched-status .pill svg { width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
+.sched-actions .btn { flex: 1; }
+.sched-hint { display: flex; gap: 10px; align-items: flex-start; margin-top: 12px; padding: 12px 14px; border-radius: var(--radius-sm);
+  background: var(--brand-soft); color: var(--ink); font-size: 14px; }
+.sched-hint svg { flex: none; width: 18px; height: 18px; color: var(--brand); margin-top: 2px; }
+.sched-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; padding: 0; }
+table.sched { border-collapse: separate; border-spacing: 0; width: 100%; min-width: 720px; font-size: 13px; }
+table.sched th, table.sched td { border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); padding: 6px 5px; vertical-align: top; text-align: center; }
+table.sched thead th { position: sticky; top: 0; background: var(--surface-2); font-weight: 600; color: var(--ink-2); z-index: 1; }
+table.sched thead th span { display: block; font-size: 12px; }
+table.sched thead th b { display: block; font-size: 16px; color: var(--ink); }
+table.sched th.today, table.sched td.today { background: color-mix(in srgb, var(--brand-soft) 55%, transparent); }
+table.sched thead th.today b { color: var(--brand); }
+table.sched .who { position: sticky; left: 0; z-index: 2; background: var(--surface); text-align: left; min-width: 118px; max-width: 140px; }
+table.sched thead .who { z-index: 3; background: var(--surface-2); vertical-align: bottom; }
+table.sched .who-in { display: flex; gap: 8px; align-items: center; }
+table.sched .who-in b { display: block; font-size: 14px; line-height: 1.2; }
+table.sched .who-in small, table.sched tfoot small { display: block; color: var(--ink-3); font-size: 11.5px; font-weight: 500; }
+table.sched tfoot th, table.sched tfoot td { background: var(--surface-2); border-bottom: 0; }
+table.sched tfoot b { display: block; font-size: 12.5px; }
+.avatar.sm { width: 30px; height: 30px; font-size: 13px; flex: none; }
+.shift-chip { display: block; width: 100%; margin: 0 0 4px; padding: 5px 4px 5px 7px; border: 0; border-left: 4px solid var(--c);
+  border-radius: 8px; background: color-mix(in srgb, var(--c) 14%, var(--surface)); color: var(--ink); text-align: left; font: inherit; cursor: pointer; position: relative; }
+span.shift-chip { cursor: default; }
+.shift-chip b { display: block; font-size: 12.5px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.shift-chip small { display: block; font-size: 11px; color: var(--ink-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.shift-chip.changed::after { content: ''; position: absolute; top: 5px; right: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); }
+.cell-add { display: grid; place-items: center; width: 100%; min-height: 44px; border: 1.5px dashed var(--line-strong); border-radius: 8px;
+  background: transparent; color: var(--ink-3); cursor: pointer; }
+.cell-add.more { min-height: 28px; border-style: dotted; }
+.cell-add svg { width: 18px; height: 18px; }
+.cell-add:hover, .cell-add:focus-visible { border-color: var(--brand); color: var(--brand); }
+table.sched .off { display: block; padding: 12px 0; color: var(--ink-3); font-size: 12px; }
+.sched-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; margin: 10px 2px 0; font-size: 12.5px; color: var(--ink-2); }
+.sched-legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+.day-chips { flex-wrap: wrap; margin: 0; padding: 0; }
+.tpl-pick { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-top: 4px; }
+.tpl-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 76px; padding: 10px 12px; text-align: left;
+  border: 1px solid var(--line); border-left: 6px solid var(--c); border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; }
+.tpl-btn b { font-size: 15px; }
+.tpl-btn span { font-size: 15px; font-variant-numeric: tabular-nums; }
+.tpl-btn small { color: var(--ink-3); font-size: 12px; }
+.tpl-btn[aria-pressed="true"] { background: color-mix(in srgb, var(--c) 14%, var(--surface)); border-color: var(--c); }
+.tpl-btn:active { transform: scale(.98); }
+.custom-times { margin-top: 14px; }
+.custom-times summary { cursor: pointer; font-weight: 700; color: var(--brand); padding: 8px 0; }
+.my-shifts .row { align-items: center; }
+.my-shifts .is-today { background: color-mix(in srgb, var(--brand-soft) 50%, transparent); }
+.my-shifts .pill { margin-left: 6px; vertical-align: 1px; }
+.date-badge { display: flex; flex-direction: column; align-items: center; justify-content: center; width: 46px; height: 46px; border-radius: 12px;
+  background: var(--surface-3); flex: none; line-height: 1.1; }
+.date-badge small { font-size: 11px; color: var(--ink-3); }
+.date-badge b { font-size: 18px; }
+a.my-shift { display: block; color: inherit; text-decoration: none; margin-bottom: 12px; border-left: 6px solid var(--brand); }
+.my-shift .label { display: flex; align-items: center; gap: 6px; }
+.my-shift .label svg { width: 16px; height: 16px; }
+.my-shift .big { font-size: 28px; font-weight: 800; font-variant-numeric: tabular-nums; margin: 4px 0 2px; }
+.my-shift .big.off { font-size: 22px; color: var(--ink-2); }
+.my-shift .sub { color: var(--ink-2); font-size: 14px; }
+.my-shift .next { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); color: var(--ink-2); }
+.on-today { display: flex; flex-wrap: wrap; gap: 8px; }
+.who-chip { display: inline-flex; flex-direction: column; padding: 6px 12px; border-radius: 10px; background: var(--surface-3); font-size: 12.5px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.who-chip b { font-size: 14px; color: var(--ink); }
+#print-root .sched-print { page: sched-landscape; }
+@page sched-landscape { size: A4 landscape; margin: 10mm; }
+.sched-print header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8px; }
+.sched-print h1 { font-size: 20px; margin: 2px 0 0; }
+.sched-print table { width: 100%; border-collapse: collapse; font-size: 11pt; }
+.sched-print th, .sched-print td { border: 1px solid #333; padding: 5px 6px; text-align: center; vertical-align: top; }
+.sched-print tbody th { text-align: left; }
+.sched-print small { display: block; font-size: 8.5pt; color: #444; font-weight: 400; }
+.sched-print .num { text-align: right; }
+
+.view-seg { margin: 12px 0 10px; }
+.day-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 10px; }
+.day-strip button { display: flex; flex-direction: column; align-items: center; gap: 1px; padding: 7px 0; border: 1px solid var(--line);
+  border-radius: 12px; background: var(--surface); color: var(--ink); font: inherit; cursor: pointer; min-height: 64px; }
+.day-strip small { font-size: 11.5px; color: var(--ink-3); }
+.day-strip b { font-size: 17px; }
+.day-strip i { font-style: normal; font-size: 10.5px; color: var(--ink-3); }
+.day-strip .is-today b { color: var(--brand); }
+.day-strip [aria-pressed="true"] { background: var(--brand); border-color: var(--brand); color: var(--on-brand); }
+.day-strip [aria-pressed="true"] small, .day-strip [aria-pressed="true"] i, .day-strip [aria-pressed="true"].is-today b { color: var(--on-brand); }
+.day-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 12px 16px; border-bottom: 1px solid var(--line); }
+.day-list .row { align-items: center; }
+.day-cells { display: flex; flex-direction: column; gap: 4px; width: 132px; flex: none; }
+.day-cells .shift-chip { margin: 0; }
+.day-cells .cell-add { min-height: 40px; gap: 4px; display: flex; justify-content: center; align-items: center; font-weight: 600; font-size: 13px; }
+.day-cells .cell-add.more { min-height: 30px; }
+.day-cells .off { padding: 8px 0; text-align: center; color: var(--ink-3); font-size: 13px; }
+.my-shifts .sub { white-space: normal; overflow: visible; }

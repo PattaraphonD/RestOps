@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v10';
+const KEY = 'ro.demo.db.v11';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -538,4 +538,17 @@ function seed(api, db, lang) {
   if (draft.dry) {
     as('po.save', { item: { supplierId: sup.dry, orderDate: today }, lines: draft.dry.map((l) => ({ ingredientId: l.ingredientId, qtyOrdered: Math.max(l.qty, 2), unitPrice: l.unitCost })) });
   }
+  // The schedule: last week and this week published; next week copied as a draft, waiting to be published.
+  const tpl = Object.fromEntries(as('shiftTemplates.list', {}).map((x, i) => [['full', 'morning', 'evening'][i], x.id]));
+  const team = Object.fromEntries(db.read('Users').map((u) => [u.username, u.id]));
+  const wd = new Date(`${today}T00:00:00Z`).getUTCDay();
+  const monday = D(today, -((wd + 6) % 7));
+  const pattern = [['manager', 'full', [0, 1, 2, 3, 4]], ['staff', 'morning', [0, 1, 3, 4, 5, 6]], ['bon', 'evening', [1, 2, 3, 4, 5, 6]]];
+  const lastMonday = D(monday, -7);
+  pattern.forEach(([who, kind, days]) => days.forEach((n) =>
+    as('schedule.save', { item: { userId: team[who], date: D(lastMonday, n), templateId: tpl[kind] } })));
+  as('schedule.publish', { weekStart: lastMonday });
+  as('schedule.copyWeek', { weekStart: monday });
+  as('schedule.publish', { weekStart: monday });
+  as('schedule.copyWeek', { weekStart: D(monday, 7) });
 }

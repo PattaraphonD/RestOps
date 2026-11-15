@@ -11,6 +11,7 @@ import { renderChannels as channels } from './channels.js';
 import { renderManual as sop } from './sop.js';
 import { renderCategories as categories, categoryField, wireCategoryField } from './categories.js';
 import { renderTeam } from './team.js';
+import { renderSchedule } from './schedule.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -18,7 +19,7 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team: renderTeam, settings, account, production, channels, sop, categories };
+  const pages = { expenses, suppliers, team: renderTeam, schedule: renderSchedule, settings, account, production, channels, sop, categories };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -35,6 +36,7 @@ function index({ el, setTitle, state, can }) {
     <section class="section"><div class="card"><ul class="list">
       ${item('#/orders', 'truck', t('more.orders'), t(can('manager') ? 'more.ordersSub' : 'more.ordersSubStaff', {
         n: (state.boot.purchasing || {}).awaiting || 0, due: (state.boot.purchasing || {}).expectedToday || 0 }))}
+      ${item('#/more/schedule', 'calendar', can('manager') ? t('sched.title') : t('sched.myTitle'), can('manager') ? t('more.scheduleSub') : t('more.myShiftsSub'))}
     </ul></div></section>
     ${can('manager') ? html`<section class="section"><div class="section-head"><h2>${t('more.money')}</h2></div>
       <div class="card"><ul class="list">

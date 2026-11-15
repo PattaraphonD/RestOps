@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.2.0';
+  var VERSION = '2.3.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -87,14 +87,18 @@ var RestoCore = (function () {
     Devices: ['id', 'tokenHash', 'nameHint', 'joinedAt', 'lastUsedAt', 'lastUserId', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
     // Who sells an ingredient, in what pack and at what price; one preferred per ingredient (v2.1).
     SupplierItems: ['id', 'supplierId', 'ingredientId', 'supplierCode', 'packName', 'packQty', 'packPrice', 'minPacks', 'preferred',
-      'active', 'createdAt', 'updatedAt', 'updatedBy', 'version']
+      'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
+    // Shift schedule (v2.3): reusable shift times, planned shifts (times copied from the template) and published weeks.
+    ShiftTemplates: ['id', 'name', 'startTime', 'endTime', 'breakMinutes', 'colour', 'sortOrder', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
+    Shifts: ['id', 'userId', 'date', 'templateId', 'startTime', 'endTime', 'breakMinutes', 'note', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+    SchedulePublishes: ['id', 'weekStart', 'publishedAt', 'publishedBy']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -278,7 +282,7 @@ var RestoCore = (function () {
   // Messages are written in English in the code below and translated on the way out
   // when the app asks for Thai (request field `lang: 'th'`).
   var TH_LABELS = {
-    'Name': 'ชื่อ', 'Unit': 'หน่วย', 'Cost per unit': 'ราคาต่อหน่วย', 'Minimum level': 'ระดับขั้นต่ำ',
+    'Name': 'ชื่อ', 'Unit': 'หน่วย', 'Shift': 'กะ', 'Shift name': 'ชื่อกะ', 'Break': 'เวลาพัก', 'Person': 'พนักงาน', 'Week': 'สัปดาห์', 'Cost per unit': 'ราคาต่อหน่วย', 'Minimum level': 'ระดับขั้นต่ำ',
     'Pack size': 'ขนาดแพ็ก', 'Minimum order': 'จำนวนสั่งขั้นต่ำ', 'Pack price': 'ราคาต่อแพ็ก', 'Supplier item': 'แหล่งซื้อ',
     'Supplier name': 'ชื่อซัพพลายเออร์', 'Dish name': 'ชื่อเมนู', 'Selling price': 'ราคาขาย', 'Category': 'หมวดหมู่',
     'Amount': 'จำนวนเงิน', 'Username': 'ชื่อผู้ใช้', 'Target food cost %': 'เป้าหมายต้นทุนอาหาร %', 'Date': 'วันที่',
@@ -374,6 +378,16 @@ var RestoCore = (function () {
     [/^Too many wrong PINs on this phone\. Wait an hour or ask the owner\.$/, 'โทรศัพท์เครื่องนี้ใส่ PIN ผิดหลายครั้งเกินไป รอ 1 ชั่วโมง หรือแจ้งเจ้าของร้าน'],
     [/^Too many wrong PINs today\. Ask the owner to set a new PIN\.$/, 'วันนี้ใส่ PIN ผิดหลายครั้งเกินไป ให้เจ้าของร้านตั้ง PIN ใหม่ให้'],
     [/^Set a password for an owner\.$/, 'เจ้าของร้านต้องมีรหัสผ่าน ตั้งรหัสผ่านก่อน'],
+    [/^Start time must be a time like 09:30\.$/, 'เวลาเริ่มต้องเป็นเวลา เช่น 09:30'],
+    [/^End time must be a time like 09:30\.$/, 'เวลาเลิกต้องเป็นเวลา เช่น 18:00'],
+    [/^A shift must end at a different time from its start\.$/, 'เวลาเลิกต้องไม่ตรงกับเวลาเริ่ม'],
+    [/^The break is longer than the shift\.$/, 'เวลาพักนานกว่ากะ'],
+    [/^([\s\S]+) already has a shift (\S+)–(\S+) that overlaps\.$/, '$1 มีกะ $2–$3 ที่เวลาซ้อนกันอยู่แล้ว'],
+    [/^This person is no longer active\.$/, 'คนนี้ไม่ได้ทำงานกับร้านแล้ว'],
+    [/^Last week has no shifts to copy\.$/, 'สัปดาห์ก่อนไม่มีกะให้คัดลอก'],
+    [/^This week is already published\. Remove shifts one by one instead\.$/, 'สัปดาห์นี้ประกาศแล้ว ลบกะทีละรายการแทน'],
+    [/^Add shifts before publishing\.$/, 'ใส่กะก่อนประกาศตาราง'],
+    [/^This shift type is no longer used\. Choose another one\.$/, 'รูปแบบกะนี้เลิกใช้แล้ว เลือกแบบอื่น'],
     [/^Pack size must be more than 0\.$/, 'ขนาดแพ็กต้องมากกว่า 0'],
     [/^([\s\S]+) is sold in packs measured in ([\s\S]+)\. Change or remove those packs before changing the unit\.$/, '$1 มีแหล่งซื้อเป็นแพ็กที่วัดเป็น $2 แก้ไขหรือลบแพ็กเหล่านั้นก่อนเปลี่ยนหน่วย'],
     [/^Line (\d+): order whole packs\.$/, 'บรรทัดที่ $1: สั่งเป็นจำนวนแพ็กเต็ม'],
@@ -2078,9 +2092,14 @@ var RestoCore = (function () {
           if (since === null || since >= BACKUP_REMINDER_DAYS) tasks.push({ kind: 'backup', n: 1, days: since });
         }
       }
+      // From Thursday, remind whoever plans the schedule to publish next week (once the shop uses the schedule).
+      var nextWeek = addDays(weekStartOf(today), 7), wd = weekdayOf(today);
+      if (manager && (wd >= 4 || wd === 0) && !publishOf(nextWeek) && liveShifts().length) {
+        tasks.push({ kind: 'schedulePublish', n: 1, items: [{ weekStart: nextWeek }] });
+      }
       var todayClose = closes[today] ? closes[today].row : null;
       return { day: { date: today, closed: !!todayClose, closedBy: todayClose ? todayClose.closedBy : '', closedAt: todayClose ? todayClose.closedAt : '' },
-        yesterdayClosed: yClosed, tasks: tasks, setup: setup };
+        yesterdayClosed: yClosed, tasks: tasks, setup: setup, shifts: shiftsToday(today, user) };
     } };
 
     /* SOP manuals */
@@ -3234,6 +3253,253 @@ var RestoCore = (function () {
       });
       return settings();
     } };
+
+    /* ---------- shift schedule (v2.3): templates, the week, publishing, my shifts ---------- */
+
+    var DEFAULT_SHIFT_TEMPLATES = [
+      { name: 'เต็มวัน', startTime: '10:00', endTime: '20:00', breakMinutes: 60, colour: '#2a7f7a' },
+      { name: 'กะเช้า', startTime: '08:00', endTime: '16:00', breakMinutes: 60, colour: '#d99a1e' },
+      { name: 'กะบ่าย', startTime: '14:00', endTime: '22:00', breakMinutes: 60, colour: '#d7654b' }
+    ];
+    var DAY_MINUTES = 24 * 60;
+
+    function clockTime(v, label) {
+      var m = /^(\d{1,2}):(\d{2})$/.exec(trim(v));
+      if (!m || +m[1] > 23 || +m[2] > 59) fail('VALIDATION', label + ' must be a time like 09:30.');
+      return (m[1].length === 1 ? '0' : '') + m[1] + ':' + m[2];
+    }
+    function minutesOf(t) { return +t.slice(0, 2) * 60 + +t.slice(3, 5); }
+    /** [start, end] in minutes from the shift's own midnight; an end before the start is the next day. */
+    function shiftSpan(s) {
+      var a = minutesOf(s.startTime), b = minutesOf(s.endTime);
+      return [a, b <= a ? b + DAY_MINUTES : b];
+    }
+    function shiftHours(s) {
+      var sp = shiftSpan(s);
+      return Math.round(Math.max(0, sp[1] - sp[0] - num(s.breakMinutes)) / 60 * 100) / 100;
+    }
+    function shiftTimes(d) {
+      var startTime = clockTime(d.startTime, 'Start time'), endTime = clockTime(d.endTime, 'End time');
+      if (startTime === endTime) fail('VALIDATION', 'A shift must end at a different time from its start.');
+      var brk = optInt(d.breakMinutes, 'Break') || 0;
+      var out = { startTime: startTime, endTime: endTime, breakMinutes: brk };
+      var sp = shiftSpan(out);
+      if (brk >= sp[1] - sp[0]) fail('VALIDATION', 'The break is longer than the shift.');
+      return out;
+    }
+    function weekStartOf(date) { return addDays(date, -((weekdayOf(date) + 6) % 7)); }   // Monday
+    function optColour(v) {
+      var c = trim(v);
+      if (c && !/^#[0-9a-fA-F]{6}$/.test(c)) fail('VALIDATION', 'Choose a colour from the list.');
+      return c;
+    }
+
+    function ensureShiftTemplates(user) {
+      if (db.read('ShiftTemplates').length) return;
+      (writeDepth ? function (fn) { return fn(); } : db.lock)(function () {
+        if (db.read('ShiftTemplates').length) return;
+        var ts = nowIso();
+        db.append('ShiftTemplates', DEFAULT_SHIFT_TEMPLATES.map(function (d, i) {
+          return { id: newId('SHT'), name: d.name, startTime: d.startTime, endTime: d.endTime, breakMinutes: d.breakMinutes,
+            colour: d.colour, sortOrder: i + 1, active: true, createdAt: ts, updatedAt: ts, updatedBy: user.username, version: 1 };
+        }));
+      });
+    }
+    function templateRow(r) {
+      return { id: r.id, name: r.name, startTime: trim(r.startTime), endTime: trim(r.endTime), breakMinutes: num(r.breakMinutes),
+        colour: r.colour || '', sortOrder: num(r.sortOrder), active: bool(r.active), version: num(r.version), hours: shiftHours(r) };
+    }
+    function templateRows() {
+      return db.read('ShiftTemplates').map(templateRow).sort(function (a, b) { return a.sortOrder - b.sortOrder; });
+    }
+
+    A['shiftTemplates.list'] = { role: 'manager', write: false, fn: function (p, user) {
+      ensureShiftTemplates(user);
+      return templateRows();
+    } };
+
+    A['shiftTemplates.save'] = { role: 'manager', write: true, fn: function (p, user) {
+      ensureShiftTemplates(user);
+      var d = p.item || {};
+      var id = trim(d.id);
+      var name = reqStr(d.name, 'Shift name', 40);
+      var clash = active(db.read('ShiftTemplates')).some(function (r) { return r.id !== id && lower(r.name) === lower(name); });
+      if (clash) fail('VALIDATION', 'Shift "' + name + '" already exists.');
+      var times = shiftTimes(d);
+      var data = { id: id, version: d.version, name: name, startTime: times.startTime, endTime: times.endTime,
+        breakMinutes: times.breakMinutes, colour: optColour(d.colour) };
+      if (d.active !== undefined) data.active = bool(d.active);
+      if (!id) data.sortOrder = db.read('ShiftTemplates').reduce(function (m, r) { return Math.max(m, num(r.sortOrder)); }, 0) + 1;
+      return templateRow(saveRow('ShiftTemplates', 'SHT', data, user, 'Shift'));
+    } };
+
+    A['shiftTemplates.retire'] = { role: 'manager', write: true, fn: function (p, user) {
+      var r = findOrFail('ShiftTemplates', trim(p.id), 'Shift');
+      db.updateWhere('ShiftTemplates', function (x) { return x.id === r.id; },
+        { active: false, updatedAt: nowIso(), updatedBy: user.username, version: num(r.version) + 1 });
+      return { ok: true };
+    } };
+
+    /** Shifts still planned (a shift removed after publishing stays as a hidden row until the week is published again). */
+    function liveShifts() { return db.read('Shifts').filter(function (s) { return bool(s.active); }); }
+    function publishOf(weekStart) {
+      return db.read('SchedulePublishes').filter(function (r) { return r.weekStart === weekStart; })[0] || null;
+    }
+    function shiftOut(s, tpls, pub) {
+      var tpl = tpls[s.templateId];
+      return { id: s.id, userId: s.userId, date: s.date, templateId: trim(s.templateId), templateName: tpl ? tpl.name : '',
+        colour: tpl ? tpl.colour : '', startTime: trim(s.startTime), endTime: trim(s.endTime), breakMinutes: num(s.breakMinutes),
+        hours: shiftHours(s), note: s.note || '', version: num(s.version),
+        changed: !!pub && trim(s.updatedAt) > trim(pub.publishedAt) };
+    }
+    /** Another shift of this person that overlaps (the day before and after count, for overnight shifts). */
+    function overlapping(userId, date, times, exceptId) {
+      var sp = shiftSpan(times), from = addDays(date, -1), to = addDays(date, 1);
+      return liveShifts().filter(function (r) {
+        if (r.userId !== userId || r.id === exceptId || r.date < from || r.date > to) return false;
+        var q = shiftSpan(r), off = r.date === date ? 0 : r.date < date ? -DAY_MINUTES : DAY_MINUTES;
+        return q[0] + off < sp[1] && sp[0] < q[1] + off;
+      })[0] || null;
+    }
+    function rolesFirst(a, b) {
+      var order = { manager: 1, staff: 2, owner: 3 };
+      return (order[a.role] - order[b.role]) || staffName(a).localeCompare(staffName(b));
+    }
+
+    A['schedule.save'] = { role: 'manager', write: true, fn: function (p, user) {
+      ensureShiftTemplates(user);
+      var d = p.item || {};
+      var person = findOrFail('Users', trim(d.userId), 'Person');
+      if (!bool(person.active)) fail('VALIDATION', 'This person is no longer active.');
+      var date = reqDate(d.date, 'Date');
+      var tpl = trim(d.templateId) ? findOrFail('ShiftTemplates', trim(d.templateId), 'Shift') : null;
+      if (tpl && !bool(tpl.active)) fail('VALIDATION', 'This shift type is no longer used. Choose another one.');
+      // A template's times are copied, so editing the template later never rewrites planned weeks.
+      var times = shiftTimes(tpl && !trim(d.startTime) ? tpl : d);
+      var id = trim(d.id);
+      if (id && !bool(findOrFail('Shifts', id, 'Shift').active)) fail('NOT_FOUND', 'Shift not found. It may have been removed — reload and try again.');
+      var clash = overlapping(person.id, date, times, id);
+      if (clash) fail('VALIDATION', staffName(person) + ' already has a shift ' + clash.startTime + '–' + clash.endTime + ' that overlaps.');
+      var saved = saveRow('Shifts', 'SHF', { id: id, version: d.version, userId: person.id, date: date, templateId: tpl ? tpl.id : '',
+        startTime: times.startTime, endTime: times.endTime, breakMinutes: times.breakMinutes, note: optStr(d.note, 120) }, user, 'Shift');
+      return shiftOut(saved, byId(db.read('ShiftTemplates')), publishOf(weekStartOf(date)));
+    } };
+
+    A['schedule.remove'] = { role: 'manager', write: true, fn: function (p, user) {
+      var s = findOrFail('Shifts', trim(p.id), 'Shift');
+      // Once staff have seen the week, a removal is a change to announce: keep a hidden row until it is published again.
+      if (publishOf(weekStartOf(s.date))) {
+        db.updateWhere('Shifts', function (r) { return r.id === s.id; },
+          { active: false, updatedAt: nowIso(), updatedBy: user.username, version: num(s.version) + 1 });
+      } else db.removeWhere('Shifts', function (r) { return r.id === s.id; });
+      return { ok: true };
+    } };
+
+    A['schedule.week'] = { role: 'staff', write: false, fn: function (p, user) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week'));
+      var we = addDays(ws, 6);
+      var manager = ROLES[user.role] >= ROLES.manager;
+      if (manager) ensureShiftTemplates(user);
+      var pub = publishOf(ws);
+      var tpls = byId(db.read('ShiftTemplates'));
+      var users = db.read('Users');
+      // Staff see a week once it's published; managers always.
+      var removed = pub ? db.read('Shifts').filter(function (s) {
+        return !bool(s.active) && s.date >= ws && s.date <= we && trim(s.updatedAt) > trim(pub.publishedAt); }).length : 0;
+      var shifts = manager || pub ? liveShifts().filter(function (s) { return s.date >= ws && s.date <= we; })
+        .map(function (s) { return shiftOut(s, tpls, pub); })
+        .sort(function (a, b) { return (a.date + a.startTime).localeCompare(b.date + b.startTime); }) : [];
+      var hoursOf = {};
+      shifts.forEach(function (s) { hoursOf[s.userId] = (hoursOf[s.userId] || 0) + s.hours; });
+      var people = users.filter(function (u) { return (manager && bool(u.active)) || hoursOf[u.id] !== undefined; })
+        .sort(rolesFirst).map(function (u) {
+          return { id: u.id, name: staffName(u), position: u.position || '', colour: u.colour || '', role: u.role,
+            active: bool(u.active), hours: Math.round((hoursOf[u.id] || 0) * 100) / 100 };
+        });
+      var days = [];
+      for (var i = 0; i < 7; i++) {
+        var date = addDays(ws, i), on = shifts.filter(function (s) { return s.date === date; }), seen = {};
+        on.forEach(function (s) { seen[s.userId] = 1; });
+        days.push({ date: date, people: Object.keys(seen).length, hours: Math.round(sum(on, function (s) { return s.hours; }) * 100) / 100 });
+      }
+      return { weekStart: ws, weekEnd: we, published: !!pub, publishedAt: pub ? pub.publishedAt : '', publishedBy: pub ? pub.publishedBy : '',
+        changedSincePublish: shifts.filter(function (s) { return s.changed; }).length + removed, removedSincePublish: removed, canEdit: manager,
+        people: people, shifts: shifts, days: days, totalHours: Math.round(sum(shifts, function (s) { return s.hours; }) * 100) / 100,
+        templates: manager ? templateRows() : [] };
+    } };
+
+    A['schedule.copyWeek'] = { role: 'manager', write: true, fn: function (p, user) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week')), from = addDays(ws, -7);
+      var source = liveShifts().filter(function (s) { return s.date >= from && s.date < ws; });
+      // People who already have a shift that day keep their day as it is (built before copying, so split shifts all copy).
+      var planned = {};
+      liveShifts().forEach(function (r) { if (r.date >= ws && r.date <= addDays(ws, 6)) planned[r.userId + '|' + r.date] = 1; });
+      if (!source.length) fail('VALIDATION', 'Last week has no shifts to copy.');
+      var users = byId(db.read('Users')), ts = nowIso(), copied = 0, skipped = 0;
+      source.sort(function (a, b) { return (a.date + a.startTime).localeCompare(b.date + b.startTime); }).forEach(function (s) {
+        var date = addDays(s.date, 7), u = users[s.userId];
+        var busy = planned[s.userId + '|' + date];
+        if (!u || !bool(u.active) || busy || overlapping(s.userId, date, s, '')) { skipped++; return; }
+        db.append('Shifts', [{ id: newId('SHF'), userId: s.userId, date: date, templateId: s.templateId, startTime: s.startTime,
+          endTime: s.endTime, breakMinutes: num(s.breakMinutes), note: s.note || '', active: true,
+          createdAt: ts, createdBy: user.username, updatedAt: ts, updatedBy: user.username, version: 1 }]);
+        copied++;
+      });
+      return { copied: copied, skipped: skipped };
+    } };
+
+    A['schedule.clearWeek'] = { role: 'manager', write: true, fn: function (p) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week')), we = addDays(ws, 6);
+      if (publishOf(ws)) fail('VALIDATION', 'This week is already published. Remove shifts one by one instead.');
+      var n = liveShifts().filter(function (s) { return s.date >= ws && s.date <= we; }).length;
+      db.removeWhere('Shifts', function (s) { return s.date >= ws && s.date <= we; });
+      return { removed: n };
+    } };
+
+    A['schedule.publish'] = { role: 'manager', write: true, fn: function (p, user) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week')), we = addDays(ws, 6);
+      var ts = nowIso(), pub = publishOf(ws);
+      if (!pub && !liveShifts().some(function (s) { return s.date >= ws && s.date <= we; })) fail('VALIDATION', 'Add shifts before publishing.');
+      db.removeWhere('Shifts', function (s) { return !bool(s.active) && s.date >= ws && s.date <= we; });
+      if (pub) db.updateWhere('SchedulePublishes', function (r) { return r.id === pub.id; }, { publishedAt: ts, publishedBy: user.username });
+      else db.append('SchedulePublishes', [{ id: newId('PUB'), weekStart: ws, publishedAt: ts, publishedBy: user.username }]);
+      return { weekStart: ws, publishedAt: ts };
+    } };
+
+    /** Published shifts from `from` to `to`, with who else works each day. */
+    function publishedShifts(from, to) {
+      var weeks = {};
+      db.read('SchedulePublishes').forEach(function (r) { weeks[r.weekStart] = r; });
+      var tpls = byId(db.read('ShiftTemplates'));
+      return liveShifts().filter(function (s) { return s.date >= from && s.date <= to && weeks[weekStartOf(s.date)]; })
+        .map(function (s) { return shiftOut(s, tpls, weeks[weekStartOf(s.date)]); })
+        .sort(function (a, b) { return (a.date + a.startTime).localeCompare(b.date + b.startTime); });
+    }
+    function withCoworkers(mine, all, users) {
+      return mine.map(function (s) {
+        s.coworkers = all.filter(function (o) { return o.date === s.date && o.userId !== s.userId && users[o.userId] && bool(users[o.userId].active); })
+          .map(function (o) { return { name: staffName(users[o.userId]), startTime: o.startTime, endTime: o.endTime }; });
+        return s;
+      });
+    }
+
+    A['schedule.mine'] = { role: 'staff', write: false, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : todayStr(), to = addDays(today, 13);
+      var all = publishedShifts(today, to), users = byId(db.read('Users'));
+      return { today: today, shifts: withCoworkers(all.filter(function (s) { return s.userId === user.id; }), all, users) };
+    } };
+
+    /** Home: my shift today and the next one, and who is on today. */
+    function shiftsToday(today, user) {
+      var all = publishedShifts(today, addDays(today, 13)), users = byId(db.read('Users'));
+      var mine = withCoworkers(all.filter(function (s) { return s.userId === user.id; }), all, users);
+      var onToday = all.filter(function (s) { return s.date === today && users[s.userId] && bool(users[s.userId].active); }).map(function (s) {
+        return { userId: s.userId, name: staffName(users[s.userId]), colour: users[s.userId].colour || '', startTime: s.startTime,
+          endTime: s.endTime, templateName: s.templateName };
+      });
+      return { today: mine.filter(function (s) { return s.date === today; })[0] || null,
+        next: mine.filter(function (s) { return s.date > today; })[0] || null, onToday: onToday };
+    }
 
     /* ---------- dispatcher ---------- */
 
