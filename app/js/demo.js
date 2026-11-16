@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v11';
+const KEY = 'ro.demo.db.v12';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -551,4 +551,35 @@ function seed(api, db, lang) {
   as('schedule.copyWeek', { weekStart: monday });
   as('schedule.publish', { weekStart: monday });
   as('schedule.copyWeek', { weekStart: D(monday, 7) });
+
+  // Time clock (v2.4): the shop's position, last week and this week clocked (a few late, one far), today so far.
+  as('settings.save', { values: { shopLat: '13.7367', shopLng: '100.5602', clockRadius: '150', lateGraceMinutes: '5' } });
+  const nowMs = Date.now();
+  const thai = (date, hhmm) => Date.parse(`${date}T${hhmm}:00Z`) - 7 * 3600e3;
+  const iso = (ms) => new Date(ms).toISOString();
+  const usersById = Object.fromEntries(db.read('Users').map((u) => [u.id, u]));
+  // Ploy was off sick last Thursday (approved), so that shift has no clock-in.
+  const sickDay = D(lastMonday, 3);
+  const sick = api.runAs(usersById[team.staff], 'leave.request', { type: 'sick', fromDate: sickDay, toDate: sickDay, reason: tx('Fever', 'เป็นไข้') });
+  as('leave.decide', { id: sick.id, approve: true, note: tx('Get well soon', 'หายไว ๆ นะ') });
+  const rows = [];
+  db.read('Shifts').filter((sh) => sh.date >= lastMonday && sh.date <= today && !(sh.userId === team.staff && sh.date === sickDay)).forEach((sh) => {
+    const start = thai(sh.date, sh.startTime);
+    let end = thai(sh.date, sh.endTime);
+    if (end <= start) end += 24 * 3600e3;
+    const late = r() < 0.18 ? Math.round(6 + r() * 14) : -Math.round(r() * 8);
+    const inMs = start + late * 60000;
+    if (inMs > nowMs) return;
+    const outMs = end + Math.round((r() - 0.3) * 15) * 60000;
+    const far = r() < 0.06;
+    const done = outMs < nowMs;
+    rows.push({ id: 'TIM-' + sh.id.slice(4), userId: sh.userId, date: sh.date, shiftId: sh.id, clockIn: iso(inMs), clockOut: done ? iso(outMs) : '',
+      breakMinutes: Number(sh.breakMinutes) || 0, inPlace: far ? 'far' : 'ok', inDistance: far ? 1850 : Math.round(10 + r() * 60),
+      outPlace: done ? 'ok' : '', outDistance: done ? Math.round(10 + r() * 60) : '', source: 'self', needsReview: false, missedOut: false,
+      approvedAt: sh.date < monday && done ? iso(thai(monday, '09:00')) : '', approvedBy: sh.date < monday && done ? 'owner' : '', note: '', active: true,
+      createdAt: iso(inMs), createdBy: usersById[sh.userId].username, updatedAt: iso(done ? outMs : inMs), updatedBy: usersById[sh.userId].username, version: done ? 2 : 1 });
+  });
+  db.append('TimeEntries', rows);
+  // Bon asks for a day off next week.
+  api.runAs(usersById[team.bon], 'leave.request', { type: 'personal', fromDate: D(monday, 9), toDate: D(monday, 9), reason: tx('Family errand', 'ธุระที่บ้าน') });
 }

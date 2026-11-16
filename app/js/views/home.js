@@ -4,6 +4,7 @@ import { html, mount, icon, money, pct, today, addDays, fmtMonth, fmtDate, timeO
 import { produceSheet } from './production.js';
 import { cashFlowChart, barList } from '../charts.js';
 import { t } from '../i18n.js';
+import { clockCard, wireClock } from './timeclock.js';
 import { allowed } from '../app.js';
 
 let month = null;
@@ -68,6 +69,8 @@ const TASK = {
   backup: { icon: 'download', cls: 'warn', href: () => '#/more/settings' },
   pinBlocked: { icon: 'users', cls: 'bad', href: () => '#/more/team' },
   schedulePublish: { icon: 'calendar', cls: 'warn', href: (x) => `#/more/schedule/${x.items[0].weekStart}` },
+  clockReview: { icon: 'clock', cls: 'warn', href: (x) => `#/more/timesheet/${(x.items && x.items[0] && x.items[0].weekStart) || ''}` },
+  leavePending: { icon: 'users', cls: 'warn', href: () => '#/more/leave' },
 };
 
 /** "งานวันนี้": what this person should do now, each row one tap from the place to do it. */
@@ -89,7 +92,15 @@ function myShiftCard(sh) {
 function onTodayCard(sh) {
   if (!sh || !sh.onToday.length) return '';
   return html`<section class="section"><div class="section-head"><h2>${t('sched.onToday')}</h2><a class="link" href="#/more/schedule">${t('sched.title')}</a></div>
-    <div class="card pad on-today">${sh.onToday.map((p) => html`<span class="who-chip"><b>${p.name}</b>${p.startTime}–${p.endTime}</span>`)}</div></section>`;
+    <div class="card pad on-today">${sh.onToday.map((p) => html`<span class="who-chip ${clockCls(p.clock)}"><b>${p.name}</b>${p.startTime}–${p.endTime}
+      ${p.clock ? html`<small>${clockText(p.clock)}</small>` : ''}</span>`)}</div></section>`;
+}
+const clockCls = (c) => (!c ? '' : c.state === 'notIn' || c.state === 'absent' ? 'is-bad' : c.state === 'in' ? (c.lateMinutes ? 'is-late' : 'is-in') : c.state === 'out' ? 'is-out' : '');
+function clockText(c) {
+  if (c.state === 'in') return c.lateMinutes ? t('clock.chipLate', { time: c.inTime, n: c.lateMinutes }) : t('clock.chipIn', { time: c.inTime });
+  if (c.state === 'out') return t('clock.chipOut', { time: c.outTime });
+  if (c.state === 'notIn') return t('clock.chipNotIn', { n: c.lateMinutes });
+  return t(`clock.chip.${c.state}`);
 }
 
 function todayCard(sum, extra = []) {
@@ -141,7 +152,13 @@ function setupCard(setup) {
 function todaySummary(d) {
   return call('today.summary', { today: d }).catch((err) => { console.warn('today.summary', err); return null; });
 }
+/** The clock card for people who clock (not the owner); otherwise the plain "my shift" card. */
+function shiftOrClock(sum) {
+  if (!sum) return '';
+  return sum.clock && sum.clock.canClock ? clockCard(sum.clock, sum.shifts && sum.shifts.next) : myShiftCard(sum.shifts);
+}
 function wireToday(ctx, host, sum) {
+  if (sum && sum.clock && sum.clock.canClock) wireClock(host, sum.clock, () => ctx.rerender());
   $$('[data-task="preps"]', host).forEach((b) => b.addEventListener('click', () => {
     const p = (sum.tasks.find((x) => x.kind === 'preps') || { items: [] }).items[0];
     produceSheet(ctx, p && p.id);
@@ -216,7 +233,7 @@ export async function render(ctx) {
   mount($('#dash'), html`
     ${isCurrent && sum ? html`${setupCard(sum.setup)}
     ${todayCard(sum, r.purchasing && r.purchasing.overdue ? [{ kind: 'overdueBills', n: r.purchasing.overdue, sub: money(r.payables.overdue) }] : [])}
-    ${myShiftCard(sum.shifts)}${onTodayCard(sum.shifts)}` : ''}
+    ${shiftOrClock(sum)}${onTodayCard(sum.shifts)}` : ''}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${t('home.revenue')} · ${fmtMonth(month, false)}</div>
         <div class="val tabular">${money(tot.revenue, { cents: false })}</div>
@@ -340,7 +357,7 @@ async function renderPeriod(ctx, period, date) {
   const dayShort = fmtDate(date, { day: 'numeric', month: 'short' });
 
   mount($('#dash'), html`
-    ${sum ? html`${setupCard(sum.setup)}${todayCard(sum)}${myShiftCard(sum.shifts)}${onTodayCard(sum.shifts)}` : ''}
+    ${sum ? html`${setupCard(sum.setup)}${todayCard(sum)}${shiftOrClock(sum)}${onTodayCard(sum.shifts)}` : ''}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${heroLabel}</div>
         <div class="val tabular">${money(tot.revenue, { cents: false })}</div>
@@ -457,7 +474,7 @@ async function renderStaff(ctx) {
   if (stale() || !$('#staff')) return;
   const low = boot.ingredients.filter((i) => i.active && i.status !== 'ok');
   mount($('#staff'), html`
-    ${sum ? myShiftCard(sum.shifts) : ''}
+    ${shiftOrClock(sum)}
     <div class="kpis">
       <div class="card kpi hero"><div class="label">${icon('receipt')}${t('home.todaySales')}</div>
         <div class="val">${money(s.total, { cents: false })}</div><div class="delta">${t('home.itemsSold', { n: s.dishes })}</div></div>

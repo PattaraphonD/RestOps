@@ -51,6 +51,8 @@ export async function renderTeam(ctx) {
         ${u.role === 'owner' ? html`<span class="pill brand">${t('team.password')}</span>`
           : u.hasPin ? html`<span class="pill good">PIN</span>` : html`<span class="pill warn">${t('team.noPin')}</span>`}
       </button></li>`)}</ul></div>
+    <div class="section-head" style="margin-top:18px"><h2>${t('team.clockSettings')}</h2></div>
+    <form class="card pad" id="clock-settings" novalidate>${clockSettings(state.boot.settings)}</form>
     <div class="section-head" style="margin-top:18px"><h2>${t('team.devices')}</h2><button class="btn ghost sm" id="reset-all">${t('team.resetAll')}</button></div>
     <div class="card" id="devices"><div class="skeleton" style="height:64px"></div></div>`);
   $$('[data-id]', el).forEach((b) => b.addEventListener('click', () => personSheet(ctx, people.find((u) => u.id === b.dataset.id))));
@@ -61,6 +63,52 @@ export async function renderTeam(ctx) {
   });
   drawQr(ctx, $('#qr'));
   drawDevices(ctx, $('#devices'));
+  wireClockSettings(ctx, $('#clock-settings'));
+}
+
+function clockSettings(st) {
+  const set = String(st.shopLat || '') !== '';
+  const sel = (name, list, cur, fmt) => html`<select class="select" name="${name}">${list.map((v) => html`<option value="${v}" ${String(v) === String(cur) ? raw('selected') : ''}>${fmt(v)}</option>`)}</select>`;
+  return html`
+    <div class="shop-place ${set ? 'is-set' : ''}">${icon(set ? 'check' : 'alert')}<div><b>${set ? t('team.placeSet') : t('team.placeNotSet')}</b>
+      <div class="small muted">${set ? t('team.placeSetText') : t('team.placeNotSetText')}</div></div></div>
+    <button type="button" class="btn block" id="use-here">${icon('send')}${set ? t('team.placeUpdate') : t('team.placeUse')}</button>
+    <div class="form-row" style="margin-top:12px">
+      <label class="field"><span class="label">${t('team.radius')}</span>${sel('clockRadius', [...new Set([100, 150, 300, 500, Number(st.clockRadius ?? 150)])].sort((a, b) => a - b), st.clockRadius ?? 150, (v) => t('clock.metres', { n: v }))}</label>
+      <label class="field"><span class="label">${t('team.grace')}</span>${sel('lateGraceMinutes', [0, 5, 10, 15], st.lateGraceMinutes ?? 5, (v) => (v ? t('sched.minutes', { n: v }) : t('team.noGrace')))}</label>
+    </div>
+    <div class="form-row three">
+      <label class="field"><span class="label">${t('leave.type.sick')}</span><input class="input" name="leaveSickDays" type="number" inputmode="numeric" min="0" value="${st.leaveSickDays ?? 30}"></label>
+      <label class="field"><span class="label">${t('leave.type.personal')}</span><input class="input" name="leavePersonalDays" type="number" inputmode="numeric" min="0" value="${st.leavePersonalDays ?? 3}"></label>
+      <label class="field"><span class="label">${t('leave.type.vacation')}</span><input class="input" name="leaveVacationDays" type="number" inputmode="numeric" min="0" value="${st.leaveVacationDays ?? 6}"></label>
+    </div>
+    <p class="small muted" style="margin-top:0">${t('team.leaveDaysHint')}</p>
+    <button class="btn primary block" type="submit">${t('common.save')}</button>`;
+}
+
+function wireClockSettings(ctx, f) {
+  // Saves and redraws; callers wrap it in busy() once (a second busy on the same button would do nothing).
+  const save = async (values, msg) => {
+    const st = await call('settings.save', { values });
+    ctx.state.boot.settings = st;
+    mount(f, clockSettings(st));
+    wireClockSettings(ctx, f);
+    toast(msg || t('team.saved'));
+  };
+  $('#use-here', f).addEventListener('click', (e) => {
+    busy(e.currentTarget, async () => {
+      const { locate } = await import('./timeclock.js');
+      const p = await locate();
+      if (p.lat === undefined) throw new Error(t('team.placeFailed'));
+      if (p.accuracy > 100) toast(t('team.placeRough', { n: p.accuracy }), 'warn', 6000);
+      await save({ shopLat: String(p.lat), shopLng: String(p.lng) }, t('team.placeSaved'));
+    }, f);
+  });
+  f.addEventListener('submit', (e) => {
+    e.preventDefault();
+    busy(f.querySelector('[type=submit]'), () => save({ clockRadius: f.clockRadius.value, lateGraceMinutes: f.lateGraceMinutes.value,
+      leaveSickDays: f.leaveSickDays.value, leavePersonalDays: f.leavePersonalDays.value, leaveVacationDays: f.leaveVacationDays.value }), f);
+  });
 }
 
 async function drawQr(ctx, box) {

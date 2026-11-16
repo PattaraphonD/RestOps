@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.3.1';
+  var VERSION = '2.4.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -91,14 +91,20 @@ var RestoCore = (function () {
     // Shift schedule (v2.3): reusable shift times, planned shifts (times copied from the template) and published weeks.
     ShiftTemplates: ['id', 'name', 'startTime', 'endTime', 'breakMinutes', 'colour', 'sortOrder', 'active', 'createdAt', 'updatedAt', 'updatedBy', 'version'],
     Shifts: ['id', 'userId', 'date', 'templateId', 'startTime', 'endTime', 'breakMinutes', 'note', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
-    SchedulePublishes: ['id', 'weekStart', 'publishedAt', 'publishedBy']
+    SchedulePublishes: ['id', 'weekStart', 'publishedAt', 'publishedBy'],
+    // Time clock (v2.4): one row per clock-in; times are server ISO, the date is the shop's (Thai) date. Distances only, no coordinates.
+    TimeEntries: ['id', 'userId', 'date', 'shiftId', 'clockIn', 'clockOut', 'breakMinutes', 'inPlace', 'inDistance', 'outPlace', 'outDistance',
+      'source', 'needsReview', 'missedOut', 'approvedAt', 'approvedBy', 'note', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+    // Leave requests (v2.4): calendar days from–to inclusive.
+    LeaveRequests: ['id', 'userId', 'type', 'fromDate', 'toDate', 'days', 'reason', 'status', 'decidedBy', 'decidedAt', 'decisionNote',
+      'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt', 'shiftId', 'clockIn', 'clockOut', 'approvedAt', 'fromDate', 'toDate', 'decidedAt'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -117,7 +123,12 @@ var RestoCore = (function () {
     menuCategories: 'Mains, Noodles & Rice, Starters, Desserts, Drinks',
     units: 'kg, g, L, ml, pcs, pack, bottle, can',
     priceRounding: '',                // '' = by currency (THB -> 5); else none | 1 | 5 | 10 | 0.99 | 9-ending
-    foodBudget: ''                    // monthly ingredient budget; '' = expected revenue × target food cost %
+    foodBudget: '',                   // monthly ingredient budget; '' = expected revenue × target food cost %
+    // Time clock and leave (v2.4)
+    shopLat: '', shopLng: '',         // the shop's position (set by the owner standing in the shop)
+    clockRadius: '150',               // metres: further than this is marked "outside the shop" (never blocked)
+    lateGraceMinutes: '5',
+    leaveSickDays: '30', leavePersonalDays: '3', leaveVacationDays: '6'   // per year (Thai labour-law minimums)
   };
   var CHANNEL_TYPES = ['dineIn', 'takeaway', 'delivery', 'other'];
   var BACKUP_REMINDER_DAYS = 30;   // remind the owner to download a backup after a month
@@ -282,7 +293,7 @@ var RestoCore = (function () {
   // Messages are written in English in the code below and translated on the way out
   // when the app asks for Thai (request field `lang: 'th'`).
   var TH_LABELS = {
-    'Name': 'ชื่อ', 'Unit': 'หน่วย', 'Shift': 'กะ', 'Shift name': 'ชื่อกะ', 'Break': 'เวลาพัก', 'Person': 'พนักงาน', 'Week': 'สัปดาห์', 'Cost per unit': 'ราคาต่อหน่วย', 'Minimum level': 'ระดับขั้นต่ำ',
+    'Name': 'ชื่อ', 'Unit': 'หน่วย', 'Shift': 'กะ', 'Shift name': 'ชื่อกะ', 'Reason': 'เหตุผล', 'First day': 'วันแรก', 'Last day': 'วันสุดท้าย', 'Leave request': 'คำขอลา', 'Year': 'ปี', 'Time entry': 'เวลาทำงาน', 'Radius': 'รัศมี', 'Grace': 'เวลาผ่อนผัน', 'Leave days': 'จำนวนวันลา', 'Shop position': 'ตำแหน่งร้าน', 'Break': 'เวลาพัก', 'Person': 'พนักงาน', 'Week': 'สัปดาห์', 'Cost per unit': 'ราคาต่อหน่วย', 'Minimum level': 'ระดับขั้นต่ำ',
     'Pack size': 'ขนาดแพ็ก', 'Minimum order': 'จำนวนสั่งขั้นต่ำ', 'Pack price': 'ราคาต่อแพ็ก', 'Supplier item': 'แหล่งซื้อ',
     'Supplier name': 'ชื่อซัพพลายเออร์', 'Dish name': 'ชื่อเมนู', 'Selling price': 'ราคาขาย', 'Category': 'หมวดหมู่',
     'Amount': 'จำนวนเงิน', 'Username': 'ชื่อผู้ใช้', 'Target food cost %': 'เป้าหมายต้นทุนอาหาร %', 'Date': 'วันที่',
@@ -387,6 +398,26 @@ var RestoCore = (function () {
     [/^Last week has no shifts to copy\.$/, 'สัปดาห์ก่อนไม่มีกะให้คัดลอก'],
     [/^This week is already published\. Remove shifts one by one instead\.$/, 'สัปดาห์นี้ประกาศแล้ว ลบกะทีละรายการแทน'],
     [/^Add shifts before publishing\.$/, 'ใส่กะก่อนประกาศตาราง'],
+    [/^You didn't clock out on (\d{4})-(\d{2})-(\d{2})\. Tell us when you finished first\.$/, function (m) { return 'คุณยังไม่ได้กดออกงานวันที่ ' + Number(m[3]) + '/' + Number(m[2]) + '/' + (Number(m[1]) + 543) + ' บอกเวลาที่เลิกงานก่อน'; }],
+    [/^Ask the owner or another manager to change your own time\.$/, 'เวลาทำงานของตัวเอง ให้เจ้าของร้านหรือผู้จัดการคนอื่นแก้'],
+    [/^This person already has leave on these days\.$/, 'คนนี้มีวันลาในช่วงนี้อยู่แล้ว'],
+    [/^You are already clocked in\.$/, 'คุณกดเข้างานแล้ว'],
+    [/^You are not clocked in\.$/, 'คุณยังไม่ได้กดเข้างาน'],
+    [/^The owner doesn't clock in\.$/, 'เจ้าของร้านไม่ต้องลงเวลา'],
+    [/^That time is still to come\.$/, 'เวลานี้ยังมาไม่ถึง'],
+    [/^A day can't be longer than 24 hours\.$/, 'วันทำงานยาวเกิน 24 ชั่วโมงไม่ได้'],
+    [/^This overlaps another time entry of this person\.$/, 'เวลานี้ซ้อนกับเวลาทำงานอื่นของคนนี้'],
+    [/^Shop position is not a real place\.$/, 'ตำแหน่งร้านไม่ถูกต้อง'],
+    [/^Choose a leave type\.$/, 'เลือกประเภทการลา'],
+    [/^The last day can't be before the first day\.$/, 'วันสุดท้ายต้องไม่ก่อนวันแรก'],
+    [/^Leave can be at most 60 days at a time\.$/, 'ลาได้ครั้งละไม่เกิน 60 วัน'],
+    [/^Leave more than 30 days ago is added by a manager\.$/, 'การลาที่ผ่านมาเกิน 30 วัน ให้ผู้จัดการเป็นคนบันทึก'],
+    [/^You already asked for leave on these days\.$/, 'คุณขอลาวันเหล่านี้ไปแล้ว'],
+    [/^The owner doesn't need to ask for leave\.$/, 'เจ้าของร้านไม่ต้องขอลา'],
+    [/^This request was already decided\.$/, 'คำขอนี้ตัดสินแล้ว'],
+    [/^Ask the owner or another manager to decide on your own leave\.$/, 'การลาของตัวเอง ให้เจ้าของร้านหรือผู้จัดการคนอื่นอนุมัติ'],
+    [/^Ask your manager to cancel approved leave\.$/, 'การลาที่อนุมัติแล้ว ให้ผู้จัดการเป็นคนยกเลิก'],
+    [/^Use whole numbers\.$/, 'ใช้ตัวเลขจำนวนเต็ม'],
     [/^This shift type is no longer used\. Choose another one\.$/, 'รูปแบบกะนี้เลิกใช้แล้ว เลือกแบบอื่น'],
     [/^Pack size must be more than 0\.$/, 'ขนาดแพ็กต้องมากกว่า 0'],
     [/^([\s\S]+) is sold in packs measured in ([\s\S]+)\. Change or remove those packs before changing the unit\.$/, '$1 มีแหล่งซื้อเป็นแพ็กที่วัดเป็น $2 แก้ไขหรือลบแพ็กเหล่านั้นก่อนเปลี่ยนหน่วย'],
@@ -2092,6 +2123,12 @@ var RestoCore = (function () {
           if (since === null || since >= BACKUP_REMINDER_DAYS) tasks.push({ kind: 'backup', n: 1, days: since });
         }
       }
+      if (manager) {
+        var review = liveEntries().filter(needsCheck).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+        if (review.length) tasks.push({ kind: 'clockReview', n: review.length, items: [{ weekStart: weekStartOf(review[0].date) }] });
+        var pendingLeave = db.read('LeaveRequests').filter(function (l) { return l.status === 'pending' && (l.userId !== user.id || user.role === 'owner'); }).length;
+        if (pendingLeave) tasks.push({ kind: 'leavePending', n: pendingLeave });
+      }
       // From Thursday, remind whoever plans the schedule to publish next week (once the shop uses the schedule).
       var nextWeek = addDays(weekStartOf(today), 7), wd = weekdayOf(today);
       if (manager && (wd >= 4 || wd === 0) && !publishOf(nextWeek) && liveShifts().length) {
@@ -2099,7 +2136,7 @@ var RestoCore = (function () {
       }
       var todayClose = closes[today] ? closes[today].row : null;
       return { day: { date: today, closed: !!todayClose, closedBy: todayClose ? todayClose.closedBy : '', closedAt: todayClose ? todayClose.closedAt : '' },
-        yesterdayClosed: yClosed, tasks: tasks, setup: setup, shifts: shiftsToday(today, user) };
+        yesterdayClosed: yClosed, tasks: tasks, setup: setup, shifts: shiftsToday(today, user), clock: clockStatus(user) };
     } };
 
     /* SOP manuals */
@@ -3246,6 +3283,16 @@ var RestoCore = (function () {
         if (k === 'vatRate') v = String(reqNum(v, 'VAT rate', { min: 0 }));
         if (k === 'foodBudget' && trim(v) !== '') v = String(round(reqNum(v, 'Monthly ingredient budget', { min: 0 })));
         if (k === 'priceTolerancePct') v = String(reqNum(v, 'Price tolerance %', { min: 0 }));
+        if ((k === 'shopLat' || k === 'shopLng') && trim(v) !== '') {
+          var deg = reqNum(v, 'Shop position', {});
+          if (Math.abs(deg) > (k === 'shopLat' ? 90 : 180)) fail('VALIDATION', 'Shop position is not a real place.');
+          v = String(Math.round(deg * 1e6) / 1e6);
+        }
+        if (['clockRadius', 'lateGraceMinutes', 'leaveSickDays', 'leavePersonalDays', 'leaveVacationDays'].indexOf(k) >= 0) {
+          var whole = reqNum(v, k === 'clockRadius' ? 'Radius' : k === 'lateGraceMinutes' ? 'Grace' : 'Leave days', { min: 0 });
+          if (Math.round(whole) !== whole) fail('VALIDATION', 'Use whole numbers.');
+          v = String(whole);
+        }
         if (k === 'costMethod' && ['average', 'last'].indexOf(v) < 0) fail('VALIDATION', 'Unknown cost method.');
         if (k === 'priceRounding' && v !== '' && RestoPricing.ROUNDING_RULES.indexOf(v) < 0) fail('VALIDATION', 'Unknown price rounding.');
         if (existing[k]) db.updateWhere('Settings', function (r) { return r.key === k; }, { value: v, updatedAt: ts, updatedBy: user.username });
@@ -3425,7 +3472,7 @@ var RestoCore = (function () {
       return { weekStart: ws, weekEnd: we, published: !!pub, publishedAt: pub ? pub.publishedAt : '', publishedBy: pub ? pub.publishedBy : '',
         changedSincePublish: shifts.filter(function (s) { return s.changed; }).length + removed, removedSincePublish: removed, canEdit: manager,
         people: people, shifts: shifts, days: days, totalHours: Math.round(sum(shifts, function (s) { return s.hours; }) * 100) / 100,
-        templates: manager ? templateRows() : [] };
+        templates: manager ? templateRows() : [], leaves: manager || pub ? leaveDays(ws, we, manager) : [] };
     } };
 
     /** The month as a calendar: Monday before the 1st to the Sunday after the last day; staff get published weeks only. */
@@ -3462,7 +3509,8 @@ var RestoCore = (function () {
           return { id: u.id, name: staffName(u), position: u.position || '', colour: u.colour || '', role: u.role, active: bool(u.active),
             hours: Math.round((hoursOf[u.id] || 0) * 100) / 100, days: Object.keys(days).length };
         });
-      return { month: month, first: first, last: last, from: from, to: to, canEdit: manager, weeks: weeks, people: people, shifts: shifts,
+      var leaves = leaveDays(from, to, manager).filter(function (l) { return manager || pubs[weekStartOf(l.date)]; });
+      return { month: month, first: first, last: last, from: from, to: to, canEdit: manager, weeks: weeks, people: people, shifts: shifts, leaves: leaves,
         totalHours: Math.round(sum(inMonth, function (s) { return s.hours; }) * 100) / 100 };
     } };
 
@@ -3529,14 +3577,450 @@ var RestoCore = (function () {
 
     /** Home: my shift today and the next one, and who is on today. */
     function shiftsToday(today, user) {
-      var all = publishedShifts(today, addDays(today, 13)), users = byId(db.read('Users'));
+      var all = publishedShifts(today, addDays(today, 13)), users = byId(db.read('Users')), manager = ROLES[user.role] >= ROLES.manager;
       var mine = withCoworkers(all.filter(function (s) { return s.userId === user.id; }), all, users);
       var onToday = all.filter(function (s) { return s.date === today && users[s.userId] && bool(users[s.userId].active); }).map(function (s) {
+        var live = db.read('Shifts').filter(function (r) { return r.id === s.id; })[0];
         return { userId: s.userId, name: staffName(users[s.userId]), colour: users[s.userId].colour || '', startTime: s.startTime,
-          endTime: s.endTime, templateName: s.templateName };
+          endTime: s.endTime, templateName: s.templateName,
+          // Clock status (late, not in) is for whoever runs the shift; the owner doesn't clock.
+          clock: live && manager && users[s.userId].role !== 'owner' ? clockStateFor(s.userId, live) : null };
       });
       return { today: mine.filter(function (s) { return s.date === today; })[0] || null,
         next: mine.filter(function (s) { return s.date > today; })[0] || null, onToday: onToday };
+    }
+
+    /* ---------- time clock (v2.4): clock in/out, forgotten clock-outs, the manager's timesheet ---------- */
+
+    var SHOP_UTC_OFFSET_MINUTES = 7 * 60;   // Thailand, no daylight saving: shop dates and times come from the server clock
+    var MISSED_AFTER_MINUTES = 16 * 60;     // an entry still open after this long is a forgotten clock-out
+    var NO_SHIFT_MISSED_MINUTES = 12 * 60;  // without a shift, open this long counts as forgotten
+    var AFTER_SHIFT_MINUTES = 3 * 60;       // with a shift: still open 3 hours after its end counts as forgotten
+    var RETRY_MINUTES = 2;                  // a repeated clock-in within this window is the same tap (slow network)
+
+    function shopClock(iso) {
+      var d = new Date((iso ? Date.parse(iso) : env.now().getTime()) + SHOP_UTC_OFFSET_MINUTES * 60000).toISOString();
+      return { date: d.slice(0, 10), time: d.slice(11, 16) };
+    }
+    function isoAtShop(date, hhmm) {
+      return new Date(Date.parse(date + 'T' + hhmm + ':00Z') - SHOP_UTC_OFFSET_MINUTES * 60000).toISOString();
+    }
+    function minutesBetween(a, b) { return Math.round((Date.parse(b) - Date.parse(a)) / 60000); }
+    /** Planned start and end of a shift as ISO times (an end before the start is the next day). */
+    function shiftWindow(sh) {
+      var start = isoAtShop(sh.date, trim(sh.startTime)), end = isoAtShop(sh.date, trim(sh.endTime));
+      if (end <= start) end = new Date(Date.parse(end) + DAY_MINUTES * 60000).toISOString();
+      return { start: start, end: end };
+    }
+    function metresBetween(lat1, lng1, lat2, lng2) {
+      var R = 6371000, rad = Math.PI / 180;
+      var dLat = (lat2 - lat1) * rad, dLng = (lng2 - lng1) * rad;
+      var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(lat1 * rad) * Math.cos(lat2 * rad) * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+      return Math.round(2 * R * Math.asin(Math.sqrt(a)));
+    }
+    /** Where the phone was: ok (at the shop), far, none (no location) or '' (the shop's position isn't set). Never blocks. */
+    function placeOf(p) {
+      var st = settings();
+      var lat = Number(p.lat), lng = Number(p.lng), acc = Math.min(Math.max(num(p.accuracy), 0), 200);
+      if (p.lat === undefined || p.lat === null || p.lat === '' || !isFinite(lat) || !isFinite(lng)) return { place: 'none', distance: '' };
+      if (trim(st.shopLat) === '' || trim(st.shopLng) === '') return { place: '', distance: '' };
+      var d = metresBetween(Number(st.shopLat), Number(st.shopLng), lat, lng);
+      var radius = trim(st.clockRadius) === '' ? 150 : num(st.clockRadius);
+      return { place: d - acc <= radius ? 'ok' : 'far', distance: d };
+    }
+    function lateGrace() { var g = settings().lateGraceMinutes; return trim(g) === '' ? 5 : num(g); }
+
+    function entryOut(e, shifts) {
+      var sh = e.shiftId ? (shifts || byId(db.read('Shifts')))[e.shiftId] : null;
+      var w = sh ? shiftWindow(sh) : null;
+      var open = !trim(e.clockOut);
+      var late = w ? Math.max(0, minutesBetween(w.start, e.clockIn)) : 0;
+      var early = w && !open ? Math.max(0, minutesBetween(e.clockOut, w.end)) : 0;
+      var worked = open ? null : Math.max(0, minutesBetween(e.clockIn, e.clockOut) - num(e.breakMinutes));
+      return { id: e.id, userId: e.userId, date: e.date, shiftId: trim(e.shiftId), inAt: e.clockIn, outAt: trim(e.clockOut),
+        inTime: shopClock(e.clockIn).time, outTime: open ? '' : shopClock(e.clockOut).time,
+        breakMinutes: num(e.breakMinutes), workedMinutes: worked, hours: worked === null ? null : Math.round(worked / 60 * 100) / 100,
+        lateMinutes: late > lateGrace() ? late : 0, earlyMinutes: early > lateGrace() ? early : 0,
+        inPlace: e.inPlace || '', inDistance: trim(e.inDistance) === '' ? '' : num(e.inDistance),
+        outPlace: e.outPlace || '', outDistance: trim(e.outDistance) === '' ? '' : num(e.outDistance),
+        source: e.source || 'self', needsReview: bool(e.needsReview), missedOut: bool(e.missedOut), approved: !!trim(e.approvedAt),
+        note: e.note || '', open: open, version: num(e.version),
+        shift: sh ? { startTime: trim(sh.startTime), endTime: trim(sh.endTime), templateId: trim(sh.templateId) } : null };
+    }
+    function liveEntries() { return db.read('TimeEntries').filter(function (e) { return bool(e.active); }); }
+    function openEntryOf(userId) {
+      return liveEntries().filter(function (e) { return e.userId === userId && !trim(e.clockOut); })[0] || null;
+    }
+    function isMissed(e) {
+      if (!e || trim(e.clockOut)) return false;
+      var now = nowIso(), mins = minutesBetween(e.clockIn, now);
+      if (mins > MISSED_AFTER_MINUTES) return true;
+      var sh = e.shiftId ? byId(db.read('Shifts'))[e.shiftId] : null;
+      if (sh) return minutesBetween(shiftWindow(sh).end, now) > AFTER_SHIFT_MINUTES;
+      return mins > NO_SHIFT_MISSED_MINUTES;
+    }
+    /** Something for the manager to look at: a fix by staff, a forgotten clock-out, or a clock away from the shop. */
+    function needsCheck(e) {
+      if (!bool(e.active) || trim(e.approvedAt)) return false;
+      return bool(e.needsReview) || isMissed(e) || e.inPlace === 'far' || e.inPlace === 'none' || e.outPlace === 'far' || e.outPlace === 'none';
+    }
+    /** The person's shift closest to `iso` that day, or yesterday's if it's still running (overnight shifts). */
+    function shiftFor(userId, date, iso, publishedOnly) {
+      var best = null, bestGap = Infinity, yesterday = addDays(date, -1);
+      liveShifts().forEach(function (sh) {
+        if (sh.userId !== userId || (sh.date !== date && sh.date !== yesterday)) return;
+        if (sh.date === yesterday && shiftWindow(sh).end <= iso) return;
+        if (publishedOnly && !publishOf(weekStartOf(sh.date))) return;
+        var gap = Math.abs(minutesBetween(shiftWindow(sh).start, iso));
+        if (gap < bestGap) { best = sh; bestGap = gap; }
+      });
+      return best;
+    }
+    function missedMessage(e) { return "You didn't clock out on " + e.date + '. Tell us when you finished first.'; }
+    var publishedOnlyFor = function (user) { return user.role === 'staff'; };
+    function clockStatus(user) {
+      if (user.role === 'owner') return { canClock: false };
+      var now = nowIso(), here = shopClock(), open = openEntryOf(user.id);
+      var sh = shiftFor(user.id, here.date, now, publishedOnlyFor(user));
+      var openOut = null;
+      if (open) {
+        openOut = entryOut(open);
+        var osh = open.shiftId ? byId(db.read('Shifts'))[open.shiftId] : null;
+        openOut.suggestOut = osh ? trim(osh.endTime) : '';
+      }
+      var todayEntries = liveEntries().filter(function (e) { return e.userId === user.id && e.date === here.date; }).map(function (e) { return entryOut(e); });
+      return { canClock: true, date: here.date, time: here.time, now: now, open: openOut, missed: isMissed(open),
+        shift: sh ? { id: sh.id, startTime: trim(sh.startTime), endTime: trim(sh.endTime), breakMinutes: num(sh.breakMinutes) } : null,
+        todayEntries: todayEntries, locationSet: trim(settings().shopLat) !== '' };
+    }
+
+    A['clock.status'] = { role: 'staff', write: false, fn: function (p, user) { return clockStatus(user); } };
+
+    A['clock.in'] = { role: 'staff', write: true, fn: function (p, user) {
+      if (user.role === 'owner') fail('VALIDATION', "The owner doesn't clock in.");
+      var open = openEntryOf(user.id), now = nowIso();
+      if (isMissed(open)) fail('VALIDATION', missedMessage(open));
+      // The same tap sent twice (slow network): answer with the entry already made.
+      if (open && minutesBetween(open.clockIn, now) <= RETRY_MINUTES) return entryOut(open);
+      if (open) fail('VALIDATION', 'You are already clocked in.');
+      var here = shopClock(), sh = shiftFor(user.id, here.date, now, publishedOnlyFor(user)), loc = placeOf(p);
+      var row = { id: newId('TIM'), userId: user.id, date: sh ? sh.date : here.date, shiftId: sh ? sh.id : '', clockIn: now, clockOut: '',
+        breakMinutes: sh ? num(sh.breakMinutes) : 0, inPlace: loc.place, inDistance: loc.distance, outPlace: '', outDistance: '',
+        source: 'self', needsReview: false, missedOut: false, approvedAt: '', approvedBy: '', note: '', active: true,
+        createdAt: now, createdBy: user.username, updatedAt: now, updatedBy: user.username, version: 1 };
+      db.append('TimeEntries', [row]);
+      return entryOut(row);
+    } };
+
+    A['clock.out'] = { role: 'staff', write: true, fn: function (p, user) {
+      var open = openEntryOf(user.id);
+      if (!open) fail('VALIDATION', 'You are not clocked in.');
+      if (isMissed(open)) fail('VALIDATION', missedMessage(open));
+      var now = nowIso(), loc = placeOf(p);
+      var patch = { clockOut: now, outPlace: loc.place, outDistance: loc.distance, updatedAt: now, updatedBy: user.username, version: num(open.version) + 1 };
+      // A shift shorter than its planned break (e.g. sent home early) keeps no break.
+      var mins = minutesBetween(open.clockIn, now);
+      if (mins <= num(open.breakMinutes) * 2) patch.breakMinutes = 0;
+      // Much longer than the shift (or 12 hours without one): worth a look before it's paid.
+      var osh = open.shiftId ? byId(db.read('Shifts'))[open.shiftId] : null;
+      if (osh ? mins > shiftHours(osh) * 60 + num(osh.breakMinutes) + 120 : mins > NO_SHIFT_MISSED_MINUTES) patch.needsReview = true;
+      db.updateWhere('TimeEntries', function (r) { return r.id === open.id; }, patch);
+      var merged = {}; for (var k in open) merged[k] = open[k]; for (k in patch) merged[k] = patch[k];
+      return entryOut(merged);
+    } };
+
+    /** "When did you finish?" for a forgotten clock-out: saved, and marked for the manager to check. */
+    A['clock.fixMissed'] = { role: 'staff', write: true, fn: function (p, user) {
+      var e = liveEntries().filter(function (r) { return r.id === trim(p.id) && r.userId === user.id; })[0];
+      if (!e || trim(e.clockOut) || trim(e.approvedAt)) fail('NOT_FOUND', 'Time entry not found. It may have been removed — reload and try again.');
+      var out = isoAtShop(e.date, clockTime(p.outTime, 'End time'));
+      while (out <= e.clockIn) out = new Date(Date.parse(out) + DAY_MINUTES * 60000).toISOString();
+      if (out > nowIso()) fail('VALIDATION', 'That time is still to come.');
+      var patch = { clockOut: out, outPlace: '', outDistance: '', needsReview: true, missedOut: true, updatedAt: nowIso(), updatedBy: user.username, version: num(e.version) + 1 };
+      db.updateWhere('TimeEntries', function (r) { return r.id === e.id; }, patch);
+      var merged = {}; for (var k in e) merged[k] = e[k]; for (k in patch) merged[k] = patch[k];
+      return entryOut(merged);
+    } };
+
+    /** Shifts that should have been worked by now and have no time entry (approved leave excused). */
+    function absencesBetween(from, to) {
+      var now = nowIso(), entries = liveEntries(), users = byId(db.read('Users'));
+      // Before the shop's first clock-in there was nothing to clock, so nothing is missing.
+      var since = db.read('TimeEntries').reduce(function (m, e) { var d = shopClock(e.clockIn).date; return !m || d < m ? d : m; }, '');
+      if (!since) return [];
+      return liveShifts().filter(function (sh) {
+        if (sh.date < from || sh.date > to || sh.date < since || !publishOf(weekStartOf(sh.date))) return false;
+        if (!users[sh.userId] || users[sh.userId].role === 'owner') return false;
+        if (shiftWindow(sh).end > now) return false;
+        if (onLeave(sh.userId, sh.date)) return false;
+        return !entries.some(function (e) { return entryCovers(e, sh); });
+      });
+    }
+    /** Does this time entry belong to that shift? By its link, or (unlinked entries) by the day. */
+    function entryCovers(e, sh) {
+      return e.userId === sh.userId && (e.shiftId ? e.shiftId === sh.id : e.date === sh.date);
+    }
+    function onLeave(userId, date) {
+      return db.read('LeaveRequests').some(function (l) {
+        return l.userId === userId && l.status === 'approved' && l.fromDate <= date && l.toDate >= date;
+      });
+    }
+
+    A['timesheet.week'] = { role: 'manager', write: false, fn: function (p) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week')), we = addDays(ws, 6);
+      var shifts = byId(db.read('Shifts')), users = db.read('Users');
+      var entries = liveEntries().filter(function (e) { return e.date >= ws && e.date <= we; })
+        .map(function (e) { return entryOut(e, shifts); })
+        .sort(function (a, b) { return (a.date + a.inAt).localeCompare(b.date + b.inAt); });
+      var planned = liveShifts().filter(function (sh) { return sh.date >= ws && sh.date <= we; });
+      var absences = absencesBetween(ws, we).map(function (sh) {
+        return { userId: sh.userId, date: sh.date, shiftId: sh.id, startTime: trim(sh.startTime), endTime: trim(sh.endTime) };
+      });
+      var raw = byId(db.read('TimeEntries'));
+      var flagged = function (e) { return needsCheck(raw[e.id]); };
+      var involved = {};
+      entries.forEach(function (e) { involved[e.userId] = 1; });
+      planned.forEach(function (sh) { involved[sh.userId] = 1; });
+      var people = users.filter(function (u) { return u.role !== 'owner' && (bool(u.active) || involved[u.id]); }).sort(rolesFirst).map(function (u) {
+        var mine = entries.filter(function (e) { return e.userId === u.id; });
+        var plannedMin = sum(planned.filter(function (sh) { return sh.userId === u.id; }), function (sh) { return shiftHours(sh) * 60; });
+        var workedMin = sum(mine, function (e) { return e.workedMinutes || 0; });
+        return { id: u.id, name: staffName(u), position: u.position || '', colour: u.colour || '', active: bool(u.active),
+          plannedHours: Math.round(plannedMin / 60 * 100) / 100, workedHours: Math.round(workedMin / 60 * 100) / 100,
+          late: mine.filter(function (e) { return e.lateMinutes > 0; }).length,
+          early: mine.filter(function (e) { return e.earlyMinutes > 0; }).length,
+          absent: absences.filter(function (a) { return a.userId === u.id; }).length,
+          toCheck: mine.filter(flagged).length };
+      });
+      return { weekStart: ws, weekEnd: we, today: shopClock().date, people: people, entries: entries, absences: absences, leaves: leaveDays(ws, we, true),
+        toApprove: entries.filter(function (e) { return !e.open && !e.approved; }).length,
+        stillOpen: entries.filter(function (e) { return e.open; }).length };
+    } };
+
+    /** My own week: published shifts and my clock times (staff and managers). */
+    A['clock.mine'] = { role: 'staff', write: false, fn: function (p, user) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week')), we = addDays(ws, 6), shifts = byId(db.read('Shifts'));
+      var entries = liveEntries().filter(function (e) { return e.userId === user.id && e.date >= ws && e.date <= we; })
+        .map(function (e) { return entryOut(e, shifts); }).sort(function (a, b) { return a.inAt.localeCompare(b.inAt); });
+      var planned = liveShifts().filter(function (sh) { return sh.userId === user.id && sh.date >= ws && sh.date <= we && publishOf(weekStartOf(sh.date)); })
+        .map(function (sh) { return { id: sh.id, date: sh.date, startTime: trim(sh.startTime), endTime: trim(sh.endTime), hours: shiftHours(sh) }; });
+      var absent = absencesBetween(ws, we).filter(function (sh) { return sh.userId === user.id; }).map(function (sh) { return sh.date; });
+      return { weekStart: ws, weekEnd: we, today: shopClock().date, entries: entries, planned: planned, absent: absent,
+        leaves: leaveDays(ws, we, true).filter(function (l) { return l.userId === user.id; }),
+        workedHours: Math.round(sum(entries, function (e) { return e.workedMinutes || 0; }) / 60 * 100) / 100,
+        plannedHours: Math.round(sum(planned, function (x) { return x.hours; }) * 100) / 100 };
+    } };
+
+    A['timesheet.save'] = { role: 'manager', write: true, fn: function (p, user) {
+      var d = p.item || {};
+      var person = findOrFail('Users', trim(d.userId), 'Person');
+      var date = reqDate(d.date, 'Date');
+      if (person.id === user.id && user.role !== 'owner') fail('VALIDATION', 'Ask the owner or another manager to change your own time.');
+      var reason = reqStr(d.reason, 'Reason', 200);
+      var inAt = isoAtShop(date, clockTime(d.inTime, 'Start time'));
+      var outAt = '';
+      if (trim(d.outTime)) {
+        outAt = isoAtShop(date, clockTime(d.outTime, 'End time'));
+        while (outAt <= inAt) outAt = new Date(Date.parse(outAt) + DAY_MINUTES * 60000).toISOString();
+        if (minutesBetween(inAt, outAt) > 24 * 60) fail('VALIDATION', "A day can't be longer than 24 hours.");
+      }
+      if (inAt > nowIso() || (outAt && outAt > nowIso())) fail('VALIDATION', 'That time is still to come.');
+      var brk = optInt(d.breakMinutes, 'Break') || 0;
+      if (outAt && brk >= minutesBetween(inAt, outAt)) fail('VALIDATION', 'The break is longer than the shift.');
+      var id = trim(d.id), current = null;
+      if (id) {
+        current = findOrFail('TimeEntries', id, 'Time entry');
+        if (!bool(current.active)) fail('NOT_FOUND', 'Time entry not found. It may have been removed — reload and try again.');
+        if (num(d.version) !== num(current.version)) fail('CONFLICT', 'This time entry was changed by ' + (current.updatedBy || 'someone else') + ' while you were editing. Your changes were not saved — reload to see the latest version.');
+      }
+      var end = outAt || nowIso();
+      var clash = liveEntries().some(function (e) {
+        if (e.userId !== person.id || e.id === id) return false;
+        var eEnd = trim(e.clockOut) || nowIso();
+        return e.clockIn < end && inAt < eEnd;
+      });
+      if (clash) fail('VALIDATION', 'This overlaps another time entry of this person.');
+      var sh = shiftFor(person.id, date, inAt, false), ts = nowIso();
+      var data = { userId: person.id, date: date, shiftId: sh ? sh.id : '', clockIn: inAt, clockOut: outAt, breakMinutes: brk,
+        source: 'manager', needsReview: false, approvedAt: '', approvedBy: '', note: reason, updatedAt: ts, updatedBy: user.username };
+      if (current) {
+        data.version = num(current.version) + 1;
+        db.updateWhere('TimeEntries', function (r) { return r.id === id; }, data);
+        var merged = {}; for (var k in current) merged[k] = current[k]; for (k in data) merged[k] = data[k];
+        return entryOut(merged);
+      }
+      var row = { id: newId('TIM'), inPlace: 'manual', inDistance: '', outPlace: '', outDistance: '', missedOut: false, active: true,
+        createdAt: ts, createdBy: user.username, version: 1 };
+      for (var c in data) row[c] = data[c];
+      db.append('TimeEntries', [row]);
+      return entryOut(row);
+    } };
+
+    A['timesheet.remove'] = { role: 'manager', write: true, fn: function (p, user) {
+      var e = findOrFail('TimeEntries', trim(p.id), 'Time entry');
+      if (!bool(e.active)) fail('NOT_FOUND', 'Time entry not found. It may have been removed — reload and try again.');
+      if (e.userId === user.id && user.role !== 'owner') fail('VALIDATION', 'Ask the owner or another manager to change your own time.');
+      if (p.version !== undefined && num(p.version) !== num(e.version)) fail('CONFLICT', 'This time entry was changed by ' + (e.updatedBy || 'someone else') + ' while you were editing. Your changes were not saved — reload to see the latest version.');
+      var reason = reqStr(p.reason, 'Reason', 200);
+      db.updateWhere('TimeEntries', function (r) { return r.id === e.id; },
+        { active: false, note: reason, updatedAt: nowIso(), updatedBy: user.username, version: num(e.version) + 1 });
+      return { ok: true };
+    } };
+
+    /** Approves the week's finished entries (what payroll will use); open ones wait. */
+    A['timesheet.approve'] = { role: 'manager', write: true, fn: function (p, user) {
+      var ws = weekStartOf(reqDate(p.weekStart, 'Week')), we = addDays(ws, 6), ts = nowIso();
+      var inWeek = liveEntries().filter(function (e) { return e.date >= ws && e.date <= we; });
+      // Only what the manager saw (id + version), and never a manager's own time (the owner or another manager approves it).
+      var seen = null, changed = 0, own = 0;
+      if (p.entries) { seen = {}; p.entries.forEach(function (x) { seen[trim(x.id)] = num(x.version); }); }
+      var ready = inWeek.filter(function (e) {
+        if (!trim(e.clockOut) || trim(e.approvedAt)) return false;
+        if (seen && seen[e.id] === undefined) return false;
+        if (seen && seen[e.id] !== num(e.version)) { changed++; return false; }
+        if (user.role !== 'owner' && e.userId === user.id) { own++; return false; }
+        return true;
+      });
+      ready.forEach(function (e) {
+        db.updateWhere('TimeEntries', function (r) { return r.id === e.id; },
+          { approvedAt: ts, approvedBy: user.username, needsReview: false, updatedAt: ts, updatedBy: user.username, version: num(e.version) + 1 });
+      });
+      return { approved: ready.length, open: inWeek.filter(function (e) { return !trim(e.clockOut); }).length, changed: changed, own: own };
+    } };
+
+    /** Clock state of each person on today's schedule (for "who's on today"). */
+    function clockStateFor(userId, sh) {
+      var now = nowIso(), w = shiftWindow(sh);
+      var e = liveEntries().filter(function (r) { return entryCovers(r, sh); })
+        .sort(function (a, b) { return a.clockIn < b.clockIn ? -1 : 1; })[0];
+      if (e) {
+        var out = entryOut(e);
+        return out.open ? { state: 'in', inTime: out.inTime, lateMinutes: out.lateMinutes }
+          : { state: 'out', inTime: out.inTime, outTime: out.outTime, lateMinutes: out.lateMinutes };
+      }
+      if (onLeave(userId, sh.date)) return { state: 'leave' };
+      if (now < w.start) return { state: 'later' };
+      if (now > w.end) return { state: 'absent' };
+      var late = minutesBetween(w.start, now);
+      return { state: 'notIn', lateMinutes: late > lateGrace() ? late : 0 };
+    }
+
+    /* ---------- leave (v2.4): requests, balances, approval ---------- */
+
+    var LEAVE_TYPES = ['sick', 'personal', 'vacation', 'unpaid'];
+    var LEAVE_SETTING = { sick: 'leaveSickDays', personal: 'leavePersonalDays', vacation: 'leaveVacationDays' };
+    var MAX_LEAVE_DAYS = 60;
+
+    function daysInclusive(from, to) { return dayCount(from, to); }
+    function leaveOut(l, users) {
+      var all = users || byId(db.read('Users')), u = all[l.userId], by = null;
+      for (var k in all) if (all[k].username === l.decidedBy) by = all[k];
+      return { id: l.id, userId: l.userId, name: u ? staffName(u) : '', type: l.type, fromDate: l.fromDate, toDate: l.toDate, days: num(l.days),
+        reason: l.reason || '', status: l.status, decidedBy: by ? staffName(by) : (l.decidedBy || ''), decidedAt: trim(l.decidedAt), decisionNote: l.decisionNote || '',
+        createdAt: l.createdAt, version: num(l.version) };
+    }
+    /** Days of a leave that fall inside the year. */
+    function daysInYear(l, year) {
+      var from = l.fromDate > year + '-01-01' ? l.fromDate : year + '-01-01';
+      var to = l.toDate < year + '-12-31' ? l.toDate : year + '-12-31';
+      return from > to ? 0 : daysInclusive(from, to);
+    }
+    function balanceOf(u, year) {
+      var st = settings(), mine = db.read('LeaveRequests').filter(function (l) { return l.userId === u.id; }), out = {};
+      LEAVE_TYPES.forEach(function (type) {
+        var used = sum(mine.filter(function (l) { return l.type === type && l.status === 'approved'; }), function (l) { return daysInYear(l, year); });
+        var pending = sum(mine.filter(function (l) { return l.type === type && l.status === 'pending'; }), function (l) { return daysInYear(l, year); });
+        var entitled = LEAVE_SETTING[type] ? num(st[LEAVE_SETTING[type]]) : null, from = '';
+        // Paid holiday starts after a full year of work (Thai labour law); without a start date it is given.
+        if (type === 'vacation' && trim(u.startDate)) {
+          var p = trim(u.startDate).split('-');
+          var eligible = (+p[0] + 1) + '-' + p[1] + '-' + p[2];
+          if (eligible > year + '-12-31') { entitled = 0; from = eligible; }
+        }
+        out[type] = { entitled: entitled, used: used, pending: pending, left: entitled === null ? null : Math.max(0, entitled - used - pending), from: from };
+      });
+      return out;
+    }
+
+    A['leave.list'] = { role: 'staff', write: false, fn: function (p, user) {
+      var year = trim(p.year) ? String(reqNum(p.year, 'Year', { min: 2000 })) : shopClock().date.slice(0, 4);
+      var manager = ROLES[user.role] >= ROLES.manager, users = byId(db.read('Users'));
+      var requests = db.read('LeaveRequests').filter(function (l) {
+        return (manager || l.userId === user.id) && (l.status === 'pending' || l.fromDate.slice(0, 4) === year || l.toDate.slice(0, 4) === year);
+      }).map(function (l) { return leaveOut(l, users); })
+        .sort(function (a, b) { return (a.status === 'pending' ? 0 : 1) - (b.status === 'pending' ? 0 : 1) || b.fromDate.localeCompare(a.fromDate); });
+      var people = manager ? db.read('Users').filter(function (u) { return bool(u.active) && u.role !== 'owner'; }).sort(rolesFirst) : [users[user.id]];
+      return { year: year, types: LEAVE_TYPES, requests: requests,
+        balances: people.map(function (u) { return { userId: u.id, name: staffName(u), position: u.position || '', colour: u.colour || '', types: balanceOf(u, year) }; }) };
+    } };
+
+    A['leave.request'] = { role: 'staff', write: true, fn: function (p, user) {
+      var manager = ROLES[user.role] >= ROLES.manager;
+      var forId = trim(p.userId), person = user;
+      if (forId && forId !== user.id) {
+        if (!manager) fail('FORBIDDEN', "You don't have permission for this. Ask the owner to turn it on.");
+        person = findOrFail('Users', forId, 'Person');
+        if (person.role === 'owner') fail('VALIDATION', "The owner doesn't need to ask for leave.");
+      }
+      var forOther = person.id !== user.id;
+      if (person.role === 'owner') fail('VALIDATION', "The owner doesn't need to ask for leave.");
+      var type = trim(p.type);
+      if (LEAVE_TYPES.indexOf(type) < 0) fail('VALIDATION', 'Choose a leave type.');
+      var from = reqDate(p.fromDate, 'First day'), to = reqDate(p.toDate || p.fromDate, 'Last day');
+      if (to < from) fail('VALIDATION', "The last day can't be before the first day.");
+      var days = daysInclusive(from, to);
+      if (days > MAX_LEAVE_DAYS) fail('VALIDATION', 'Leave can be at most 60 days at a time.');
+      if (from < addDays(shopClock().date, forOther ? -365 : -30)) fail('VALIDATION', 'Leave more than 30 days ago is added by a manager.');
+      var clash = db.read('LeaveRequests').some(function (l) {
+        return l.userId === person.id && (l.status === 'pending' || l.status === 'approved') && l.fromDate <= to && l.toDate >= from;
+      });
+      if (clash) fail('VALIDATION', forOther ? 'This person already has leave on these days.' : 'You already asked for leave on these days.');
+      var ts = nowIso();
+      // A manager recording someone's leave (they phoned in sick) approves it at the same time.
+      var row = { id: newId('LEV'), userId: person.id, type: type, fromDate: from, toDate: to, days: days, reason: optStr(p.reason, 200),
+        status: forOther ? 'approved' : 'pending', decidedBy: forOther ? user.username : '', decidedAt: forOther ? ts : '', decisionNote: '',
+        createdAt: ts, createdBy: user.username, updatedAt: ts, updatedBy: user.username, version: 1 };
+      db.append('LeaveRequests', [row]);
+      return leaveOut(row);
+    } };
+
+    function setLeaveStatus(l, status, user, note) {
+      var ts = nowIso();
+      var patch = { status: status, decidedBy: user.username, decidedAt: ts, decisionNote: optStr(note, 200), updatedAt: ts, updatedBy: user.username, version: num(l.version) + 1 };
+      db.updateWhere('LeaveRequests', function (r) { return r.id === l.id; }, patch);
+      var merged = {}; for (var k in l) merged[k] = l[k]; for (k in patch) merged[k] = patch[k];
+      return leaveOut(merged);
+    }
+
+    A['leave.decide'] = { role: 'manager', write: true, fn: function (p, user) {
+      var l = findOrFail('LeaveRequests', trim(p.id), 'Leave request');
+      if (l.status !== 'pending') fail('VALIDATION', 'This request was already decided.');
+      if (l.userId === user.id && user.role !== 'owner') fail('VALIDATION', 'Ask the owner or another manager to decide on your own leave.');
+      var out = setLeaveStatus(l, p.approve ? 'approved' : 'rejected', user, p.note);
+      // Shifts planned in those days need someone else.
+      out.shiftsAffected = liveShifts().filter(function (sh) { return sh.userId === l.userId && sh.date >= l.fromDate && sh.date <= l.toDate; }).length;
+      return out;
+    } };
+
+    A['leave.cancel'] = { role: 'staff', write: true, fn: function (p, user) {
+      var l = findOrFail('LeaveRequests', trim(p.id), 'Leave request');
+      var manager = ROLES[user.role] >= ROLES.manager;
+      if (!manager && l.userId !== user.id) fail('NOT_FOUND', 'Leave request not found. It may have been removed — reload and try again.');
+      if (l.status !== 'pending' && l.status !== 'approved') fail('VALIDATION', 'This request was already decided.');
+      if (l.status === 'approved' && !manager) fail('VALIDATION', 'Ask your manager to cancel approved leave.');
+      return setLeaveStatus(l, 'cancelled', user, p.note);
+    } };
+
+    /** Approved leave as one row per day between from and to (staff see only that the person is away). */
+    function leaveDays(from, to, manager) {
+      var out = [];
+      db.read('LeaveRequests').forEach(function (l) {
+        if (l.status !== 'approved' || l.toDate < from || l.fromDate > to) return;
+        for (var d = l.fromDate < from ? from : l.fromDate; d <= l.toDate && d <= to; d = addDays(d, 1)) {
+          out.push({ userId: l.userId, date: d, type: manager ? l.type : 'leave' });
+        }
+      });
+      return out.sort(function (a, b) { return a.date.localeCompare(b.date); });
     }
 
     /* ---------- dispatcher ---------- */

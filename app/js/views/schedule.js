@@ -88,6 +88,8 @@ async function drawWeek(ctx) {
   const tday = today();
   const days = w.days.map((d) => d.date);
   const cell = (p, d) => w.shifts.filter((s) => s.userId === p.id && s.date === d);
+  const leaveOf = (p, d) => (w.leaves || []).find((l) => l.userId === p.id && l.date === d);
+  const leaveTag = (p, d) => { const l = leaveOf(p, d); return l ? html`<span class="leave-tag">${t(l.type === 'leave' ? 'sched.onLeave' : `leave.type.${l.type}`)}</span>` : ''; };
   const status = !w.published ? html`<span class="pill">${t('sched.draft')}</span>`
     : w.changedSincePublish ? html`<span class="pill warn">${t('sched.changedN', { n: w.changedSincePublish })}</span>`
       : html`<span class="pill good">${icon('check')}${t('sched.published')}</span>`;
@@ -101,9 +103,9 @@ async function drawWeek(ctx) {
     return html`<div class="day-strip">${w.days.map((x) => html`<button data-pick="${x.date}" aria-pressed="${x.date === d}" class="${x.date === tday ? 'is-today' : ''}">
         <small>${dayShort(x.date)}</small><b>${Number(x.date.slice(8))}</b><i>${x.people ? t('sched.nPeople', { n: x.people }) : '—'}</i></button>`)}</div>
       <div class="card"><div class="day-head"><b>${dayLong(d)}</b><span class="small muted">${info.people ? `${t('sched.nPeople', { n: info.people })} · ${hrs(info.hours)}` : t('sched.nobody')}</span></div>
-      <ul class="list day-list">${people.filter((p) => edit || cell(p, d).length).map((p, i) => { const list = cell(p, d); return html`<li><div class="row">
+      <ul class="list day-list">${people.filter((p) => edit || cell(p, d).length || leaveOf(p, d)).map((p, i) => { const list = cell(p, d); return html`<li><div class="row">
         ${avatar(p, people.indexOf(p))}<span class="grow"><div class="title">${p.name}</div><div class="sub">${p.position || ''}</div></span>
-        <span class="day-cells">${list.map(chip)}${!list.length && !edit ? html`<span class="off">${t('sched.off')}</span>` : ''}
+        <span class="day-cells">${leaveTag(p, d)}${list.map(chip)}${!list.length && !edit && !leaveOf(p, d) ? html`<span class="off">${t('sched.off')}</span>` : ''}
           ${edit && p.active ? html`<button type="button" class="cell-add${list.length ? ' more' : ''}" data-add="${p.id}" data-date="${d}" aria-label="${t('sched.addFor', { name: p.name, day: dayLong(d) })}">${icon('plus')}${list.length ? '' : html`<span>${t('sched.addShort')}</span>`}</button>` : ''}</span>
       </div></li>`; })}</ul></div>`;
   };
@@ -137,9 +139,9 @@ async function drawWeek(ctx) {
         <th class="who" scope="row"><span class="who-in"><span class="avatar sm" style="background:${p.colour || PERSON_COLOURS[i % PERSON_COLOURS.length]};color:#fff">${initial(p.name)}</span>
           <span><b>${p.name}</b><small>${p.position ? p.position + ' · ' : ''}${hrs(p.hours)}</small></span></span></th>
         ${days.map((d) => { const list = cell(p, d); return html`<td class="${d === tday ? 'today' : ''}">
-          ${list.map(chip)}
+          ${leaveTag(p, d)}${list.map(chip)}
           ${edit && p.active ? html`<button type="button" class="cell-add${list.length ? ' more' : ''}" data-add="${p.id}" data-date="${d}" aria-label="${t('sched.addFor', { name: p.name, day: dayLong(d) })}">${icon('plus')}</button>` : ''}
-          ${!edit && !list.length ? html`<span class="off">${t('sched.off')}</span>` : ''}</td>`; })}
+          ${!edit && !list.length && !leaveOf(p, d) ? html`<span class="off">${t('sched.off')}</span>` : ''}</td>`; })}
       </tr>`)}</tbody>
       <tfoot><tr><th class="who" scope="row">${t('sched.total')}</th>${w.days.map((d) => html`<td class="${d.date === tday ? 'today' : ''}">
         ${d.people ? html`<b>${t('sched.nPeople', { n: d.people })}</b><small>${hrs(d.hours)}</small>` : html`<small class="muted">—</small>`}</td>`)}</tr></tfoot>
