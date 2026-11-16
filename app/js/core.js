@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.5.0';
+  var VERSION = '2.6.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -27,7 +27,9 @@ var RestoCore = (function () {
       // locked by repeated wrong PINs until the owner sets a new one
       'pinBlocked',
       // Pay (v2.5; owner only): how and how often, the rate, social security, where to transfer.
-      'payType', 'payRate', 'payCycle', 'ssoEnrolled', 'payBank', 'payAccount', 'endDate'],
+      'payType', 'payRate', 'payCycle', 'ssoEnrolled', 'payBank', 'payAccount', 'endDate',
+      // Security (v2.6): a counter that ends every session when it moves; 2-step verification secret and hashed recovery codes.
+      'sessionEpoch', 'totpSecret', 'totpEnabledAt', 'recoveryCodes'],
     // New columns are always APPENDED so existing sheets upgrade in place (Server.gs adds them).
     Suppliers: ['id', 'name', 'contactName', 'phone', 'email', 'notes', 'active',
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'leadTimeDays', 'paymentTermsDays',
@@ -102,6 +104,8 @@ var RestoCore = (function () {
     // Leave requests (v2.4): calendar days from–to inclusive.
     LeaveRequests: ['id', 'userId', 'type', 'fromDate', 'toDate', 'days', 'reason', 'status', 'decidedBy', 'decidedAt', 'decisionNote',
       'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+    // Security log (v2.6): sign-ins, failures and sensitive changes; owner-only, kept 180 days. Written even when the request fails.
+    SecurityLog: ['id', 'at', 'kind', 'userId', 'actor', 'detail', 'ip', 'agent'],
     // Payroll (v2.5): a pay run (one cycle, one period) and its payslips; adjustments are JSON [{kind, label, amount}].
     PayRuns: ['id', 'cycle', 'periodStart', 'periodEnd', 'payDate', 'status', 'paidAt', 'paidBy', 'expenseId', 'note',
       'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
@@ -115,7 +119,7 @@ var RestoCore = (function () {
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt', 'shiftId', 'clockIn', 'clockOut', 'approvedAt', 'fromDate', 'toDate', 'decidedAt', 'runId', 'periodStart', 'periodEnd', 'payDate', 'paidAt', 'expenseId', 'payAccount', 'adjustments', 'paidRunId', 'endDate'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt', 'shiftId', 'clockIn', 'clockOut', 'approvedAt', 'fromDate', 'toDate', 'decidedAt', 'runId', 'periodStart', 'periodEnd', 'payDate', 'paidAt', 'expenseId', 'payAccount', 'adjustments', 'paidRunId', 'endDate', 'at', 'ip', 'totpSecret', 'totpEnabledAt', 'recoveryCodes'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -298,12 +302,112 @@ var RestoCore = (function () {
     return hex;
   }
 
-  function hashPassword(password, salt) {
-    // Iterated to slow down brute force on a leaked sheet.
+  /* ------------------------------------------------- password and PIN hashing (v2.6) */
+
+  var PASSWORD_ROUNDS = 20000;   // ~0.1 s per try on a server: slow for an attacker with a leaked database
+  var PIN_ROUNDS = 2000;         // PINs are checked against every person (uniqueness), so fewer rounds; the pepper protects them
+
+  /** The hash used before v2.6 (500 rounds, no prefix). Still used for join codes and device keys (random, not guessable). */
+  function legacyHash(password, salt) {
     var h = salt + ':' + password;
     for (var i = 0; i < 500; i++) h = sha256(h + salt);
     return h;
   }
+  function stretch(password, salt, rounds, pepper) {
+    var h = salt + ':' + password + (pepper ? ':' + pepper : '');
+    for (var i = 0; i < rounds; i++) h = sha256(h + salt);
+    return h;
+  }
+  /** "v2$rounds$hash", or "v3$…" when the server has a secret pepper (kept outside the database). */
+  function hashPassword(password, salt, opts) {
+    opts = opts || {};
+    var rounds = opts.rounds || PASSWORD_ROUNDS;
+    return (opts.pepper ? 'v3$' : 'v2$') + rounds + '$' + stretch(String(password), salt, rounds, opts.pepper || '');
+  }
+  /** Compares without stopping at the first different character. */
+  function safeEqual(a, b) {
+    a = String(a); b = String(b);
+    var diff = a.length ^ b.length;
+    for (var i = 0; i < a.length && i < b.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+    return diff === 0;
+  }
+  function verifyHash(password, salt, stored, pepper) {
+    stored = String(stored || '');
+    if (!stored) return false;
+    var m = /^v([23])\$(\d+)\$([0-9a-f]+)$/.exec(stored);
+    if (!m) return safeEqual(stored, legacyHash(String(password), salt));
+    if (m[1] === '3' && !pepper) return false;
+    return safeEqual(m[3], stretch(String(password), salt, Number(m[2]), m[1] === '3' ? pepper : ''));
+  }
+  function needsRehash(stored, rounds, pepper) {
+    var m = /^v([23])\$(\d+)\$/.exec(String(stored || ''));
+    return !m || m[1] !== (pepper ? '3' : '2') || Number(m[2]) < rounds;
+  }
+
+  /* ------------------------------------------------- 2-step verification (TOTP, RFC 6238) */
+
+  function sha1Bytes(bytes) {
+    var h0 = 0x67452301, h1 = 0xEFCDAB89, h2 = 0x98BADCFE, h3 = 0x10325476, h4 = 0xC3D2E1F0;
+    var msg = bytes.slice(), ml = bytes.length * 8, i, t;
+    msg.push(0x80);
+    while (msg.length % 64 !== 56) msg.push(0);
+    for (i = 7; i >= 0; i--) msg.push(i > 3 ? 0 : (ml >>> (i * 8)) & 0xff);
+    var rol = function (n, s) { return (n << s) | (n >>> (32 - s)); };
+    for (var off = 0; off < msg.length; off += 64) {
+      var w = [];
+      for (i = 0; i < 16; i++) w[i] = (msg[off + i * 4] << 24) | (msg[off + i * 4 + 1] << 16) | (msg[off + i * 4 + 2] << 8) | msg[off + i * 4 + 3];
+      for (i = 16; i < 80; i++) w[i] = rol(w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16], 1);
+      var a = h0, b = h1, c = h2, d = h3, e = h4, f, k;
+      for (i = 0; i < 80; i++) {
+        if (i < 20) { f = (b & c) | (~b & d); k = 0x5A827999; }
+        else if (i < 40) { f = b ^ c ^ d; k = 0x6ED9EBA1; }
+        else if (i < 60) { f = (b & c) | (b & d) | (c & d); k = 0x8F1BBCDC; }
+        else { f = b ^ c ^ d; k = 0xCA62C1D6; }
+        t = (rol(a, 5) + f + e + k + w[i]) | 0;
+        e = d; d = c; c = rol(b, 30); b = a; a = t;
+      }
+      h0 = (h0 + a) | 0; h1 = (h1 + b) | 0; h2 = (h2 + c) | 0; h3 = (h3 + d) | 0; h4 = (h4 + e) | 0;
+    }
+    var out = [];
+    [h0, h1, h2, h3, h4].forEach(function (h) { out.push((h >>> 24) & 0xff, (h >>> 16) & 0xff, (h >>> 8) & 0xff, h & 0xff); });
+    return out;
+  }
+  function hmacSha1(key, msg) {
+    if (key.length > 64) key = sha1Bytes(key);
+    var ipad = [], opad = [];
+    for (var i = 0; i < 64; i++) { var kb = key[i] || 0; ipad.push(kb ^ 0x36); opad.push(kb ^ 0x5c); }
+    return sha1Bytes(opad.concat(sha1Bytes(ipad.concat(msg))));
+  }
+  var B32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+  function base32Encode(bytes) {
+    var bits = 0, value = 0, out = '';
+    for (var i = 0; i < bytes.length; i++) {
+      value = (value << 8) | bytes[i]; bits += 8;
+      while (bits >= 5) { out += B32.charAt((value >>> (bits - 5)) & 31); bits -= 5; }
+    }
+    if (bits > 0) out += B32.charAt((value << (5 - bits)) & 31);
+    return out;
+  }
+  function base32Decode(str) {
+    var bits = 0, value = 0, out = [];
+    String(str || '').toUpperCase().replace(/[^A-Z2-7]/g, '').split('').forEach(function (ch) {
+      value = ((value << 5) | B32.indexOf(ch)) & 0xffffffff; bits += 5;
+      if (bits >= 8) { out.push((value >>> (bits - 8)) & 0xff); bits -= 8; }
+    });
+    return out;
+  }
+  /** The 6-digit code for this secret at `timeMs` (`stepOffset` moves 30-second steps). */
+  function totp(secret, timeMs, stepOffset) {
+    var step = Math.floor(timeMs / 30000) + (stepOffset || 0), msg = [0, 0, 0, 0, 0, 0, 0, 0];
+    for (var i = 7; i >= 0; i--) { msg[i] = step & 0xff; step = Math.floor(step / 256); }
+    var h = hmacSha1(base32Decode(secret), msg), o = h[19] & 0x0f;
+    var bin = ((h[o] & 0x7f) << 24) | (h[o + 1] << 16) | (h[o + 2] << 8) | h[o + 3];
+    return ('000000' + (bin % 1000000)).slice(-6);
+  }
+  var WEAK_PASSWORDS = ['password', 'password1', 'passw0rd', 'p@ssw0rd', '12345678', '123456789', '1234567890', '87654321', '987654321',
+    '11111111', '00000000', '12341234', 'qwertyui', 'qwerty123', 'asdfghjk', '1q2w3e4r', 'abcd1234', 'iloveyou', 'admin123', 'welcome1',
+    'owner123', 'restaurant', 'thailand', 'bangkok1'];
+
 
   /* ------------------------------------------------- Thai server messages */
 
@@ -427,6 +531,16 @@ var RestoCore = (function () {
     [/^Shop position is not a real place\.$/, 'ตำแหน่งร้านไม่ถูกต้อง'],
     [/^Choose a leave type\.$/, 'เลือกประเภทการลา'],
     [/^The owner is not on the payroll\.$/, 'เจ้าของร้านไม่อยู่ในบัญชีเงินเดือน'],
+    [/^You were signed out\. Please sign in again\.$/, 'คุณถูกออกจากระบบแล้ว กรุณาเข้าสู่ระบบอีกครั้ง'],
+    [/^Too many requests\. Wait a minute and try again\.$/, 'มีการลองเข้าสู่ระบบถี่เกินไป รอ 1 นาทีแล้วลองใหม่'],
+    [/^Too many failed attempts on this account\. Try again in an hour\.$/, 'บัญชีนี้ถูกลองรหัสผิดหลายครั้งเกินไป ลองใหม่ในอีก 1 ชั่วโมง'],
+    [/^Enter the 6-digit code from your authenticator app\.$/, 'ใส่รหัส 6 หลักจากแอปยืนยันตัวตน'],
+    [/^Wrong code\. Check your authenticator app and try again\.$/, 'รหัสไม่ถูกต้อง ดูรหัสในแอปยืนยันตัวตนแล้วลองอีกครั้ง'],
+    [/^Start again: the setup code has expired\.$/, 'หมดเวลาตั้งค่า เริ่มใหม่อีกครั้ง'],
+    [/^Turn on 2-step verification first\.$/, 'เปิดการยืนยัน 2 ขั้นตอนก่อน'],
+    [/^Turn 2-step verification off first\.$/, 'ปิดการยืนยัน 2 ขั้นตอนก่อน แล้วค่อยตั้งค่าใหม่'],
+    [/^Too many wrong codes today\. Use a recovery code, or try again tomorrow\.$/, 'วันนี้ใส่รหัสผิดหลายครั้งเกินไป ใช้รหัสสำรอง หรือลองใหม่พรุ่งนี้'],
+    [/^This password is too easy to guess\. Use at least 8 characters that are not a common word or your name\.$/, 'รหัสผ่านนี้เดาง่ายเกินไป ใช้อย่างน้อย 8 ตัวอักษร ที่ไม่ใช่คำทั่วไปหรือชื่อของคุณ'],
     [/^Adjustments must be a list\.$/, 'รายการเพิ่ม/หักไม่ถูกต้อง'],
     [/^Social security rate looks too high\.$/, 'อัตราประกันสังคมสูงเกินไป ตรวจสอบอีกครั้ง'],
     [/^A normal day must be at least 1 hour\.$/, 'เวลาทำงานปกติต่อวันต้องอย่างน้อย 1 ชั่วโมง'],
@@ -780,7 +894,8 @@ var RestoCore = (function () {
       return { id: u.id, username: u.username, displayName: u.displayName || u.username, role: u.role,
         active: bool(u.active), version: num(u.version),
         nickname: u.nickname || '', fullName: u.fullName || '', position: u.position || '', phone: u.phone || '',
-        startDate: trim(u.startDate), colour: u.colour || '', hasPin: !!trim(u.pinHash), permissions: permissionsOf(u) };
+        startDate: trim(u.startDate), colour: u.colour || '', hasPin: !!trim(u.pinHash), permissions: permissionsOf(u),
+        twoStep: !!trim(u.totpSecret) && !!trim(u.totpEnabledAt) };
     }
 
     /* ---------- generic master-data save with optimistic concurrency ---------- */
@@ -828,45 +943,168 @@ var RestoCore = (function () {
 
     /* ---------- auth ---------- */
 
+    var hashOpts = function (rounds) { return { rounds: rounds, pepper: env.pepper || '' }; };
+    var pwRounds = env.hashRounds || PASSWORD_ROUNDS, pinRounds = env.pinRounds || PIN_ROUNDS;
+    var reqMeta = {};   // the current request's address and browser (set in handle), for the security log and rate limits
+
+    /* Security log: who signed in, what failed, which sensitive things changed. Owner-only; kept 180 days. */
+    var SECURITY_LOG_DAYS = 180, SECURITY_LOG_MAX = 5000;
+    var ALERT_KINDS = { 'login.locked': 1, 'login.codefail': 1, 'pin.blocked': 1, 'device.suspended': 1 };
+    function secLog(kind, userId, actor, detail) {
+      var ts = nowIso();
+      // Things the owner should look at are counted for Home (no table read needed there).
+      if (ALERT_KINDS[kind]) env.sessions.put('secalerts', String(num(env.sessions.get('secalerts')) + 1), 365 * 24 * 60 * 60);
+      db.append('SecurityLog', [{ id: newId('SEC'), at: ts, kind: kind, userId: userId || '', actor: String(actor || '').slice(0, 60),
+        detail: String(detail || '').slice(0, 200), ip: String(reqMeta.ip || '').slice(0, 60), agent: String(reqMeta.agent || '').slice(0, 120) }]);
+    }
+
+    /* Sessions: the store holds a hash of the token (a leaked database gives no usable session), with the person,
+       when it began, their sign-out counter and how they signed in. */
+    var SESSION_IDLE = { pw: 12 * 60 * 60, pin: 8 * 60 * 60 };                 // seconds without use
+    var SESSION_MAX = { pw: 30 * 24 * 60 * 60, pin: 18 * 60 * 60 };            // seconds in total, however active
+    function sessionKey(token) { return 's:' + sha256(String(token)); }
+    function deviceKeyOf(token) { return 'sdev:' + sha256(String(token)); }
+    function putSession(token, user, kind, created) {
+      env.sessions.put(sessionKey(token), [user.id, created, num(user.sessionEpoch), kind].join('|'), SESSION_IDLE[kind] || SESSION_IDLE.pw);
+    }
+    function newToken() { return env.uuid().replace(/-/g, '') + env.uuid().replace(/-/g, ''); }
+    /** Ends every session of this person (their sign-out counter moves on); `keepToken` stays signed in. */
+    function revokeSessions(user, keepToken) {
+      var epoch = num(user.sessionEpoch) + 1;
+      db.updateWhere('Users', function (r) { return r.id === user.id; }, { sessionEpoch: epoch });
+      if (keepToken) {
+        var raw = env.sessions.get(sessionKey(keepToken)), parts = raw ? raw.split('|') : [];
+        if (raw) env.sessions.put(sessionKey(keepToken), [user.id, parts[1] || env.now().getTime(), epoch, parts[3] || 'pw'].join('|'), SESSION_IDLE[parts[3]] || SESSION_IDLE.pw);
+      }
+    }
+
+    var MAX_ACCOUNT_FAILS = 30;         // per account per hour, from anywhere (devices that signed in before are exempt)
+    var MAX_CODE_FAILS = 10;            // wrong 2-step codes per account per day
+    var PUBLIC_PER_MINUTE = 40;         // sign-in requests per address per minute
+    function rateLimit() {
+      if (!reqMeta.ip) return;
+      var key = 'rl:' + reqMeta.ip + ':' + Math.floor(env.now().getTime() / 60000);
+      var n = num(env.sessions.get(key)) + 1;
+      env.sessions.put(key, String(n), 120);
+      if (n > PUBLIC_PER_MINUTE) fail('LOCKED', 'Too many requests. Wait a minute and try again.');
+    }
+
+    function secondFactorOn(user) { return !!trim(user.totpSecret) && !!trim(user.totpEnabledAt); }
+    /** A code from the authenticator app (this 30 s, the one before or after; never twice), or an unused recovery code. */
+    function checkSecondFactor(user, code, secret) {
+      code = String(code || '').replace(/[\s-]/g, '').toLowerCase();
+      var now = env.now().getTime();
+      if (/^\d{6}$/.test(code)) {
+        var last = num(env.sessions.get('totp:' + user.id));
+        for (var off = -1; off <= 1; off++) {
+          var step = Math.floor(now / 30000) + off;
+          if (step > last && safeEqual(totp(secret || user.totpSecret, now, off), code)) {
+            env.sessions.put('totp:' + user.id, String(step), 300);
+            return true;
+          }
+        }
+        return false;
+      }
+      if (secret || !code) return false;
+      var codes = list(user.recoveryCodes), hit = codes.indexOf(legacyHash('recovery:' + code, user.salt));
+      if (hit < 0) return false;
+      codes.splice(hit, 1);
+      db.updateWhere('Users', function (r) { return r.id === user.id; }, { recoveryCodes: codes.join(',') });
+      secLog('twostep.recovery', user.id, user.username, codes.length + ' left');
+      return true;
+    }
+
     function login(p) {
       var username = trim(p.username).toLowerCase();
       if (!username || !p.password) fail('VALIDATION', 'Enter your username and password.');
-      var failKey = 'fail:' + username;
-      var fails = num(env.sessions.get(failKey));
+      // Wrong guesses lock out the address they come from, so nobody can lock the owner out from elsewhere;
+      // an account under attack from many addresses is still capped.
+      var failKey = 'fail:' + username + '|' + (reqMeta.ip || ''), allKey = 'failall:' + username;
+      var fails = num(env.sessions.get(failKey)), allFails = num(env.sessions.get(allKey));
       if (fails >= MAX_FAILED_LOGINS) {
         fail('LOCKED', 'Too many failed attempts. Try again in 10 minutes or ask the owner to reset your password.');
       }
       var user = db.read('Users').filter(function (u) { return trim(u.username).toLowerCase() === username; })[0];
-      if (!user || !bool(user.active) || hashPassword(String(p.password), user.salt) !== user.passwordHash) {
+      // A device that signed in to this account before carries a token: the account-wide cap never locks it out,
+      // so an attacker guessing from many addresses cannot keep the real owner away.
+      var knownKey = user && trim(p.known) ? 'known:' + sha256(user.id + ':' + trim(p.known)) : '';
+      var known = !!knownKey && !!env.sessions.get(knownKey);
+      if (allFails >= MAX_ACCOUNT_FAILS && !known) fail('LOCKED', 'Too many failed attempts on this account. Try again in an hour.');
+      var wrong = function (message, kind) {
         env.sessions.put(failKey, String(fails + 1), LOCKOUT_SECONDS);
-        fail('AUTH', 'Wrong username or password.');
+        env.sessions.put(allKey, String(allFails + 1), 60 * 60);
+        if (!user) {
+          // A made-up name is only counted: nothing typed by a stranger is stored, and the log can't be flooded.
+          var dayKey = 'unkfail:' + shopClock().date;
+          env.sessions.put(dayKey, String(num(env.sessions.get(dayKey)) + 1), 2 * 24 * 60 * 60);
+        } else {
+          if (allFails + 1 === MAX_ACCOUNT_FAILS) secLog('login.locked', user.id, user.username, 'account');
+          secLog(kind || (fails + 1 >= MAX_FAILED_LOGINS ? 'login.locked' : 'login.fail'), user.id, user.username, '');
+        }
+        fail('AUTH', message);
+      };
+      // An unknown or switched-off name costs the same work as a wrong password (no telling them apart by timing).
+      var okPassword = user ? verifyHash(p.password, user.salt, user.passwordHash, env.pepper) : (stretch(String(p.password), 'none', pwRounds, ''), false);
+      if (!user || !bool(user.active) || !okPassword) wrong('Wrong username or password.', '');
+      if (secondFactorOn(user)) {
+        if (!trim(p.code)) fail('TOTP', 'Enter the 6-digit code from your authenticator app.');
+        // The password was right, so a wrong code means someone knows the password: logged as an alert, and capped per day
+        // (after that only a recovery code works until tomorrow).
+        var codeKey = 'codefail:' + user.id + ':' + shopClock().date, codeFails = num(env.sessions.get(codeKey));
+        var isAppCode = /^\d{6}$/.test(String(p.code).replace(/[\s-]/g, ''));
+        if (isAppCode && codeFails >= MAX_CODE_FAILS) fail('LOCKED', 'Too many wrong codes today. Use a recovery code, or try again tomorrow.');
+        if (!checkSecondFactor(user, p.code)) {
+          env.sessions.put(codeKey, String(codeFails + 1), 2 * 24 * 60 * 60);
+          wrong('Wrong code. Check your authenticator app and try again.', 'login.codefail');
+        }
       }
       env.sessions.remove(failKey);
-      var token = env.uuid().replace(/-/g, '') + env.uuid().replace(/-/g, '');
-      env.sessions.put('s:' + token, user.id, SESSION_TTL_SECONDS);
-      return { token: token, user: publicUser(user) };
+      if (!known) {
+        // Remember this device for the account (180 days); the cap above then never applies to it.
+        var knownToken = newToken();
+        env.sessions.put('known:' + sha256(user.id + ':' + knownToken), '1', 180 * 24 * 60 * 60);
+      } else env.sessions.put(knownKey, '1', 180 * 24 * 60 * 60);
+      if (needsRehash(user.passwordHash, pwRounds, env.pepper)) {
+        db.updateWhere('Users', function (r) { return r.id === user.id; }, { passwordHash: hashPassword(p.password, user.salt, hashOpts(pwRounds)) });
+      }
+      var token = newToken();
+      putSession(token, user, 'pw', env.now().getTime());
+      secLog('login.ok', user.id, user.username, '');
+      return { token: token, user: publicUser(user), known: known ? undefined : knownToken };
     }
 
     function userFromToken(token) {
       if (!token) fail('AUTH', 'Please sign in.');
-      var userId = env.sessions.get('s:' + token);
-      if (!userId) fail('AUTH', 'Your session has expired. Please sign in again.');
-      var user = db.read('Users').filter(function (u) { return u.id === userId; })[0];
-      if (!user || !bool(user.active)) {
-        env.sessions.remove('s:' + token);
-        fail('AUTH', 'Your account is no longer active.');
+      var key = sessionKey(token), dkey = deviceKeyOf(token), raw = env.sessions.get(key);
+      if (!raw) {
+        // A session from before v2.6 (stored under the token itself): accepted once and moved to the hashed form.
+        raw = env.sessions.get('s:' + token);
+        if (raw) {
+          env.sessions.remove('s:' + token);
+          var oldDev = env.sessions.get('sdev:' + token);
+          if (oldDev) { env.sessions.remove('sdev:' + token); env.sessions.put(dkey, oldDev, SESSION_IDLE.pin); }
+        }
       }
+      if (!raw) fail('AUTH', 'Your session has expired. Please sign in again.');
+      var parts = raw.split('|'), userId = parts[0], now = env.now().getTime();
+      var devId = env.sessions.get(dkey);
+      var kind = parts[3] || (devId ? 'pin' : 'pw'), created = num(parts[1]) || now;
+      var end = function (message) { env.sessions.remove(key); env.sessions.remove(dkey); fail('AUTH', message); };
+      var user = db.read('Users').filter(function (u) { return u.id === userId; })[0];
+      if (!user || !bool(user.active)) end('Your account is no longer active.');
+      // (A session from before v2.6 has no counter: it reads as 0, so the first revocation ends it too.)
+      if (num(parts[2]) !== num(user.sessionEpoch)) end('You were signed out. Please sign in again.');
+      if (now - created > (SESSION_MAX[kind] || SESSION_MAX.pw) * 1000) end('Your session has expired. Please sign in again.');
       // A PIN sign-in belongs to the phone it was made on: removing that phone ends it.
-      var devId = env.sessions.get('sdev:' + token);
       if (devId) {
         var dev = db.read('Devices').filter(function (d) { return d.id === devId; })[0];
         if (!dev || !bool(dev.active)) {
-          env.sessions.remove('s:' + token); env.sessions.remove('sdev:' + token);
+          env.sessions.remove(key); env.sessions.remove(dkey);
           fail('DEVICE', "This phone is no longer connected to the shop. Scan today's shop QR again.");
         }
-        env.sessions.put('sdev:' + token, devId, SESSION_TTL_SECONDS);
+        env.sessions.put(dkey, devId, SESSION_IDLE.pin);
       }
-      env.sessions.put('s:' + token, userId, SESSION_TTL_SECONDS); // slide expiry
+      putSession(token, user, kind, created);   // slide the idle limit
       return user;
     }
 
@@ -875,22 +1113,43 @@ var RestoCore = (function () {
     var A = {};
 
     A['auth.logout'] = { role: 'staff', write: false, fn: function (p, user, req) {
-      env.sessions.remove('s:' + req.token);
+      env.sessions.remove(sessionKey(req.token));
+      env.sessions.remove(deviceKeyOf(req.token));
       return true;
     } };
 
-    A['auth.changePassword'] = { role: 'staff', write: true, fn: function (p, user) {
-      if (hashPassword(String(p.current || ''), user.salt) !== user.passwordHash) fail('VALIDATION', 'Current password is incorrect.');
-      setPassword(user.id, p.next);
+    A['auth.changePassword'] = { role: 'staff', write: true, fn: function (p, user, req) {
+      if (!verifyHash(String(p.current || ''), user.salt, user.passwordHash, env.pepper)) fail('VALIDATION', 'Current password is incorrect.');
+      setPassword(user.id, p.next, user.username);
+      // Every other device is signed out; this one stays.
+      revokeSessions(user, req.token);
+      secLog('password.changed', user.id, user.username, '');
       return true;
     } };
 
-    function setPassword(userId, password) {
+    /** Signs this person out on every other device (a lost phone, a shared computer). */
+    A['auth.signOutEverywhere'] = { role: 'staff', write: true, fn: function (p, user, req) {
+      revokeSessions(user, req.token);
+      secLog('sessions.revoked', user.id, user.username, 'own devices');
+      return true;
+    } };
+
+    /** Long enough, not a well-known password, not built on the person's own username. */
+    function assertPassword(password, username) {
       password = String(password || '');
       if (password.length < 8) fail('VALIDATION', 'Password must be at least 8 characters.');
+      var low = password.toLowerCase(), name = String(username || '').toLowerCase();
+      var same = /^(.)\1+$/.test(password);
+      if (WEAK_PASSWORDS.indexOf(low) >= 0 || same || (name.length >= 3 && low.indexOf(name) >= 0)) {
+        fail('VALIDATION', 'This password is too easy to guess. Use at least 8 characters that are not a common word or your name.');
+      }
+      return password;
+    }
+    function setPassword(userId, password, username) {
+      password = assertPassword(password, username);
       var salt = env.uuid().replace(/-/g, '');
       db.updateWhere('Users', function (r) { return r.id === userId; },
-        { salt: salt, passwordHash: hashPassword(password, salt), updatedAt: nowIso() });
+        { salt: salt, passwordHash: hashPassword(password, salt, hashOpts(pwRounds)), updatedAt: nowIso() });
     }
 
     A['bootstrap'] = { role: 'staff', write: false, fn: function (p, user) {
@@ -2087,13 +2346,15 @@ var RestoCore = (function () {
 
     // The owner's backup: every table (passwords removed), and when it was taken, for the monthly reminder.
     A['backup.export'] = { role: 'owner', write: true, fn: function (p, user) {
+      secLog('backup.exported', user.id, user.username, '');
       var ts = nowIso(), tables = {}, counts = {};
       Object.keys(SCHEMA).forEach(function (t) {
         var rows = db.read(t);
         var blank = function (fields) { return function (r) { var c = {}; for (var k in r) c[k] = r[k]; fields.forEach(function (f) { c[f] = ''; }); return c; }; };
-        if (t === 'Users') rows = rows.map(blank(['passwordHash', 'salt', 'pinHash', 'pinSalt']));
+        if (t === 'Users') rows = rows.map(blank(['passwordHash', 'salt', 'pinHash', 'pinSalt', 'totpSecret', 'totpEnabledAt', 'recoveryCodes', 'sessionEpoch']));
         if (t === 'Devices') rows = rows.map(blank(['tokenHash']));
         if (t === 'Settings') rows = rows.filter(function (r) { return !INTERNAL_SETTINGS[r.key]; });
+        if (t === 'SecurityLog') rows = [];   // network addresses and device names stay out of backup files
         tables[t] = rows;
         counts[t] = rows.length;
       });
@@ -2148,6 +2409,8 @@ var RestoCore = (function () {
           { key: 'team', done: active(db.read('Users')).some(function (u) { return u.role !== 'owner'; }) }
         ];
         setup = { done: steps.filter(function (x) { return x.done; }).length, total: steps.length, steps: steps };
+        var alerts = securityAlerts();
+        if (alerts) tasks.push({ kind: 'securityAlert', n: alerts });
         // Backups: the free database keeps none, so remind the owner after a month (once there is data).
         var hasData = db.read('Ingredients').length || db.read('Menu').length || db.read('Sales').length;
         if (hasData) {
@@ -3108,13 +3371,13 @@ var RestoCore = (function () {
       return secret;
     }
     /** Today's join code: 20 hex characters derived from the shop's secret and the date. */
-    function joinCodeFor(date, secret) { return hashPassword(date, secret).slice(0, 20); }
+    function joinCodeFor(date, secret) { return legacyHash(date, secret).slice(0, 20); }
 
     /** The joined phone for a device key, or AUTH. */
     function deviceByKey(key) {
       key = trim(key);
       var dev = /^[0-9a-f]{48}$/.test(key) ? active(db.read('Devices')).filter(function (d) {
-        return d.tokenHash === hashPassword(key, 'device');
+        return safeEqual(d.tokenHash, legacyHash(key, 'device'));
       })[0] : null;
       if (!dev) fail('DEVICE', "This phone is no longer connected to the shop. Scan today's shop QR again.");
       return dev;
@@ -3133,7 +3396,8 @@ var RestoCore = (function () {
       if (!secret || joinCodeFor(m[1], secret) !== m[2]) expired();
       var key = (env.uuid() + env.uuid()).replace(/-/g, '').slice(0, 48);
       var ts = nowIso();
-      db.append('Devices', [{ id: newId('DEV'), tokenHash: hashPassword(key, 'device'), nameHint: optStr(p.nameHint, 80), joinedAt: ts,
+      secLog('device.joined', '', '', optStr(p.nameHint, 80));
+      db.append('Devices', [{ id: newId('DEV'), tokenHash: legacyHash(key, 'device'), nameHint: optStr(p.nameHint, 80), joinedAt: ts,
         lastUsedAt: ts, lastUserId: '', active: true, createdAt: ts, updatedAt: ts, updatedBy: 'join', version: 1 }]);
       return { deviceKey: key, shopName: settings().restaurantName };
     }
@@ -3152,15 +3416,19 @@ var RestoCore = (function () {
       var dev = deviceByKey(p.deviceKey);
       var user = active(db.read('Users')).filter(function (u) { return u.id === trim(p.userId); })[0];
       if (!user || !PIN_ROLES[user.role] || !trim(user.pinHash)) fail('AUTH', 'Wrong PIN.');
-      if (bool(user.pinBlocked)) fail('LOCKED', 'Too many wrong PINs today. Ask the owner to set a new PIN.');
+      // Kept with the sign-in counters (not on the person's row), so it holds even though the failed request saves nothing else.
+      if (env.sessions.get('pinblock:' + user.id) || bool(user.pinBlocked)) fail('LOCKED', 'Too many wrong PINs today. Ask the owner to set a new PIN.');
       // One phone can't keep guessing: 20 wrong PINs in an hour, for anyone, suspend the phone for the hour.
       var devKey = 'devfail:' + dev.id;
       var devFails = num(env.sessions.get(devKey));
-      if (devFails >= DEVICE_MAX_WRONG) fail('DEVICE', 'Too many wrong PINs on this phone. Wait an hour or ask the owner.');
+      if (devFails >= DEVICE_MAX_WRONG) {
+        if (!env.sessions.get('devsusp:' + dev.id)) { env.sessions.put('devsusp:' + dev.id, '1', 60 * 60); secLog('device.suspended', '', '', dev.nameHint || dev.id); }
+        fail('DEVICE', 'Too many wrong PINs on this phone. Wait an hour or ask the owner.');
+      }
       var failKey = 'pinfail:' + user.id;
       var fails = num(env.sessions.get(failKey));
       if (fails >= MAX_FAILED_LOGINS) fail('LOCKED', 'Too many wrong PINs. Try again in 15 minutes or ask the owner to reset your PIN.');
-      if (hashPassword(String(p.pin || ''), user.pinSalt) !== user.pinHash) {
+      if (!verifyHash(String(p.pin || ''), user.pinSalt, user.pinHash, env.pepper)) {
         env.sessions.put(devKey, String(devFails + 1), 60 * 60);
         env.sessions.put(failKey, String(fails + 1), PIN_LOCKOUT_SECONDS);
         if (fails + 1 >= MAX_FAILED_LOGINS) {
@@ -3168,14 +3436,20 @@ var RestoCore = (function () {
           var dayKey = 'pinlockday:' + user.id + ':' + todayStr();
           var lockouts = num(env.sessions.get(dayKey)) + 1;
           env.sessions.put(dayKey, String(lockouts), 24 * 60 * 60);
-          if (lockouts >= PIN_DAILY_LOCKOUTS) db.updateWhere('Users', function (r) { return r.id === user.id; }, { pinBlocked: true });
+          var blockedNow = lockouts >= PIN_DAILY_LOCKOUTS;
+          if (blockedNow) env.sessions.put('pinblock:' + user.id, '1', 10 * 365 * 24 * 60 * 60);   // until the owner sets a new PIN
+          secLog(blockedNow ? 'pin.blocked' : 'pin.fail', user.id, user.username, 'locked out');
         }
         fail('AUTH', 'Wrong PIN.');
       }
       env.sessions.remove(failKey);
-      var token = env.uuid().replace(/-/g, '') + env.uuid().replace(/-/g, '');
-      env.sessions.put('s:' + token, user.id, SESSION_TTL_SECONDS);
-      env.sessions.put('sdev:' + token, dev.id, SESSION_TTL_SECONDS);
+      if (needsRehash(user.pinHash, pinRounds, env.pepper)) {
+        db.updateWhere('Users', function (r) { return r.id === user.id; }, { pinHash: hashPassword(String(p.pin), user.pinSalt, hashOpts(pinRounds)) });
+      }
+      var token = newToken();
+      putSession(token, user, 'pin', env.now().getTime());
+      env.sessions.put(deviceKeyOf(token), dev.id, SESSION_IDLE.pin);
+      secLog('pin.ok', user.id, user.username, dev.nameHint || '');
       db.updateWhere('Devices', function (d) { return d.id === dev.id; }, { lastUsedAt: nowIso(), lastUserId: user.id });
       return { token: token, user: publicUser(user) };
     }
@@ -3192,7 +3466,7 @@ var RestoCore = (function () {
       var tel = String(phone || '').replace(/\D/g, '');
       if (tel.length >= 6 && tel.slice(-6) === pin) fail('VALIDATION', "Don't use the last 6 digits of the phone number as the PIN.");
       var taken = unique !== false && active(db.read('Users')).some(function (u) {
-        return u.id !== userId && trim(u.pinHash) && hashPassword(pin, u.pinSalt) === u.pinHash;
+        return u.id !== userId && trim(u.pinHash) && verifyHash(pin, u.pinSalt, u.pinHash, env.pepper);
       });
       if (taken) fail('VALIDATION', 'Another team member already uses this PIN. Choose a different one.');
       return pin;
@@ -3200,8 +3474,9 @@ var RestoCore = (function () {
     function setPin(userId, pin) {
       var salt = env.uuid().replace(/-/g, '');
       db.updateWhere('Users', function (r) { return r.id === userId; },
-        { pinSalt: salt, pinHash: hashPassword(pin, salt), pinSetAt: nowIso(), pinBlocked: false, updatedAt: nowIso() });
+        { pinSalt: salt, pinHash: hashPassword(pin, salt, hashOpts(pinRounds)), pinSetAt: nowIso(), pinBlocked: false, updatedAt: nowIso() });
       env.sessions.remove('pinfail:' + userId);
+      env.sessions.remove('pinblock:' + userId);
     }
 
     A['team.joinCode'] = { role: 'owner', write: true, fn: function (p, user) {
@@ -3210,18 +3485,23 @@ var RestoCore = (function () {
       return { date: date, code: code, path: '#/join/' + date + '.' + code };
     } };
 
-    A['users.resetPin'] = { role: 'owner', write: true, fn: function (p) {
+    A['users.resetPin'] = { role: 'owner', write: true, fn: function (p, user) {
       var u = findOrFail('Users', p.id, 'User');
       if (!PIN_ROLES[u.role]) fail('VALIDATION', 'The owner signs in with a password, not a PIN.');
       setPin(u.id, checkPin(p.pin, u.id, u.phone));
+      // A new PIN from the owner ends that person's sessions (the old PIN may have been seen).
+      revokeSessions(findOrFail('Users', u.id, 'User'), null);
+      secLog('pin.reset', u.id, user.username, '');
       return { id: u.id, hasPin: true };
     } };
 
-    A['auth.changePin'] = { role: 'staff', write: true, fn: function (p, user) {
+    A['auth.changePin'] = { role: 'staff', write: true, fn: function (p, user, req) {
       if (!PIN_ROLES[user.role]) fail('VALIDATION', 'The owner signs in with a password, not a PIN.');
-      if (trim(user.pinHash) && hashPassword(String(p.current || ''), user.pinSalt) !== user.pinHash) fail('VALIDATION', 'Your current PIN is wrong.');
+      if (trim(user.pinHash) && !verifyHash(String(p.current || ''), user.pinSalt, user.pinHash, env.pepper)) fail('VALIDATION', 'Your current PIN is wrong.');
       // No "someone else uses this PIN" check here: it would let staff discover other people's PINs.
       setPin(user.id, checkPin(p.next, user.id, user.phone, false));
+      revokeSessions(findOrFail('Users', user.id, 'User'), req.token);
+      secLog('pin.changed', user.id, user.username, '');
       return { hasPin: true };
     } };
 
@@ -3272,6 +3552,7 @@ var RestoCore = (function () {
       var pin = trim(d.pin);
       if (pin && role === 'owner') fail('VALIDATION', 'The owner signs in with a password, not a PIN.');
       if (pin) checkPin(pin, trim(d.id), data.phone !== undefined ? data.phone : '');
+      if (d.password) assertPassword(d.password, username);   // before anything is saved
       assertUnique('Users', 'username', username, data.id, 'Username');
       if (data.id) {
         var current = findOrFail('Users', data.id, 'User');
@@ -3281,17 +3562,25 @@ var RestoCore = (function () {
         }
         if (role === 'owner' && !(current && trim(current.passwordHash)) && !d.password) fail('VALIDATION', 'Set a password for an owner.');
         var saved = saveRow('Users', 'USR', data, user, 'User "' + username + '"');
-        if (d.password) setPassword(saved.id, d.password);
+        if (d.password) setPassword(saved.id, d.password, username);
         if (pin) setPin(saved.id, pin);
-        return publicUser(saved);
+        var roleChanged = current.role !== role, permsChanged = data.permissions !== undefined && trim(current.permissions) !== data.permissions;
+        if (roleChanged || permsChanged) secLog('user.role', saved.id, user.username, roleChanged ? current.role + ' → ' + role : 'permissions');
+        if (bool(current.active) && !data.active) secLog('user.disabled', saved.id, user.username, '');
+        if (d.password && saved.id !== user.id) secLog('password.reset', saved.id, user.username, '');
+        if (pin) secLog('pin.reset', saved.id, user.username, '');
+        // A changed role, password or PIN from the owner ends that person's sessions (not the owner's own).
+        if (saved.id !== user.id && (roleChanged || d.password || pin)) revokeSessions(findOrFail('Users', saved.id, 'User'), null);
+        return publicUser(findOrFail('Users', saved.id, 'User'));
       }
       // Managers and staff may start with a PIN only; the owner always needs a password.
       if (!d.password && !(pin && PIN_ROLES[role])) fail('VALIDATION', 'Set a starting password for the new user.');
       delete data.id;
       var created = saveRow('Users', 'USR', data, user, 'User');
-      if (d.password) setPassword(created.id, d.password);
+      if (d.password) setPassword(created.id, d.password, username);
       if (pin) setPin(created.id, pin);
-      return publicUser(created);
+      secLog('user.created', created.id, user.username, role);
+      return publicUser(findOrFail('Users', created.id, 'User'));
     } };
 
     A['settings.save'] = { role: 'owner', write: true, fn: function (p, user) {
@@ -3949,7 +4238,7 @@ var RestoCore = (function () {
       var tasks = [];
       if (ROLES[user.role] < ROLES.manager) return tasks;
       if (user.role === 'owner') {
-        var blocked = active(db.read('Users')).filter(function (u) { return bool(u.pinBlocked); });
+        var blocked = active(db.read('Users')).filter(function (u) { return !!env.sessions.get('pinblock:' + u.id) || bool(u.pinBlocked); });
         if (blocked.length) tasks.push({ kind: 'pinBlocked', n: blocked.length, items: blocked.map(function (u) { return { id: u.id, name: staffName(u) }; }) });
       }
       var pendingLeave = db.read('LeaveRequests').filter(function (l) { return l.status === 'pending' && (l.userId !== user.id || user.role === 'owner'); }).length;
@@ -4153,6 +4442,7 @@ var RestoCore = (function () {
         payBank: optStr(p.payBank, 60), payAccount: optStr(p.payAccount, 40), updatedAt: nowIso(), updatedBy: user.username,
         endDate: trim(p.endDate) ? reqDate(p.endDate, 'Last day') : '' };
       db.updateWhere('Users', function (r) { return r.id === u.id; }, patch);
+      secLog('pay.changed', u.id, user.username, '');
       var merged = {}; for (var k in u) merged[k] = u[k]; for (k in patch) merged[k] = patch[k];
       return payPerson(merged);
     } };
@@ -4472,6 +4762,102 @@ var RestoCore = (function () {
       return { slips: slips };
     } };
 
+    /* ---------- security (v2.6): 2-step verification, sign out everyone, the security log ---------- */
+
+    var RECOVERY_CODES = 8;
+    function randomBytes(n) {
+      var hex = '';
+      while (hex.length < n * 2) hex += env.uuid().replace(/-/g, '');
+      var out = [];
+      for (var i = 0; i < n; i++) out.push(parseInt(hex.substr(i * 2, 2), 16));
+      return out;
+    }
+    function newRecoveryCodes(user) {
+      var plain = [];
+      for (var i = 0; i < RECOVERY_CODES; i++) {
+        var h = env.uuid().replace(/-/g, '').slice(0, 10);
+        plain.push(h.slice(0, 5) + '-' + h.slice(5));
+      }
+      db.updateWhere('Users', function (r) { return r.id === user.id; },
+        { recoveryCodes: plain.map(function (c) { return legacyHash('recovery:' + c.replace('-', ''), user.salt); }).join(',') });
+      return plain;
+    }
+
+    /** Step 1: a new secret for the authenticator app (kept aside until a code proves the app has it). */
+    A['security.twoStepStart'] = { role: 'owner', write: false, fn: function (p, user) {
+      if (!verifyHash(String(p.password || ''), user.salt, user.passwordHash, env.pepper)) fail('VALIDATION', 'Current password is incorrect.');
+      // Swapping the authenticator means switching it off first (which also needs the password): a borrowed session can't do it quietly.
+      if (secondFactorOn(user)) fail('VALIDATION', 'Turn 2-step verification off first.');
+      var secret = base32Encode(randomBytes(20));
+      env.sessions.put('totpnew:' + user.id, secret, 15 * 60);
+      var shop = settings().restaurantName || 'Restaurant';
+      return { secret: secret, uri: 'otpauth://totp/' + encodeURIComponent(shop + ':' + user.username) + '?secret=' + secret +
+        '&issuer=' + encodeURIComponent(shop) + '&algorithm=SHA1&digits=6&period=30' };
+    } };
+
+    /** Step 2: the first code turns it on and gives the recovery codes (shown once). */
+    A['security.twoStepConfirm'] = { role: 'owner', write: true, fn: function (p, user, req) {
+      if (secondFactorOn(user)) fail('VALIDATION', 'Turn 2-step verification off first.');
+      var secret = env.sessions.get('totpnew:' + user.id);
+      if (!secret) fail('VALIDATION', 'Start again: the setup code has expired.');
+      if (!checkSecondFactor(user, p.code, secret)) fail('VALIDATION', 'Wrong code. Check your authenticator app and try again.');
+      db.updateWhere('Users', function (r) { return r.id === user.id; }, { totpSecret: secret, totpEnabledAt: nowIso() });
+      env.sessions.remove('totpnew:' + user.id);
+      revokeSessions(findOrFail('Users', user.id, 'User'), req.token);   // other devices sign in again, now with the code
+      secLog('twostep.on', user.id, user.username, '');
+      return { recoveryCodes: newRecoveryCodes(user) };
+    } };
+
+    A['security.twoStepOff'] = { role: 'owner', write: true, fn: function (p, user, req) {
+      if (!verifyHash(String(p.password || ''), user.salt, user.passwordHash, env.pepper)) fail('VALIDATION', 'Current password is incorrect.');
+      db.updateWhere('Users', function (r) { return r.id === user.id; }, { totpSecret: '', totpEnabledAt: '', recoveryCodes: '' });
+      revokeSessions(findOrFail('Users', user.id, 'User'), req.token);
+      secLog('twostep.off', user.id, user.username, '');
+      return true;
+    } };
+
+    A['security.newRecoveryCodes'] = { role: 'owner', write: true, fn: function (p, user) {
+      if (!secondFactorOn(user)) fail('VALIDATION', 'Turn on 2-step verification first.');
+      if (!verifyHash(String(p.password || ''), user.salt, user.passwordHash, env.pepper)) fail('VALIDATION', 'Current password is incorrect.');
+      secLog('twostep.codes', user.id, user.username, '');
+      return { recoveryCodes: newRecoveryCodes(user) };
+    } };
+
+    /** Signs everyone out everywhere (a lost phone, a suspected leak); this device stays in. */
+    A['security.signOutAll'] = { role: 'owner', write: true, fn: function (p, user, req) {
+      var people = db.read('Users');
+      people.forEach(function (u) { revokeSessions(u, u.id === user.id ? req.token : null); });
+      secLog('sessions.revoked', user.id, user.username, 'everyone');
+      return { people: people.length };
+    } };
+
+    function securityAlerts() { return num(env.sessions.get('secalerts')); }
+    /** The owner's security page: what's on, recent events (newest first), failed sign-ins today. Opening it marks alerts as seen. */
+    A['security.overview'] = { role: 'owner', write: false, fn: function (p, user) {
+      var users = byId(db.read('Users'));
+      var dayAgo = new Date(env.now().getTime() - 86400000).toISOString();
+      // Housekeeping happens here (the only place the whole log is read): 180 days, and never more than 5,000 rows.
+      var cutoff = new Date(env.now().getTime() - SECURITY_LOG_DAYS * 86400000).toISOString();
+      var rows = db.read('SecurityLog').slice().sort(function (a, b) { return a.at < b.at ? 1 : -1; });
+      var stale = {};
+      rows.forEach(function (r, i) { if (r.at < cutoff || i >= SECURITY_LOG_MAX) stale[r.id] = 1; });
+      if (Object.keys(stale).length) {
+        db.removeWhere('SecurityLog', function (r) { return stale[r.id]; });
+        rows = rows.filter(function (r) { return !stale[r.id]; });
+      }
+      var alerts = securityAlerts();
+      env.sessions.remove('secalerts');
+      return { twoStep: secondFactorOn(user), recoveryLeft: list(user.recoveryCodes).length, newAlerts: alerts,
+        unknownToday: num(env.sessions.get('unkfail:' + shopClock().date)),
+        failed24h: rows.filter(function (r) { return r.at > dayAgo && (r.kind === 'login.fail' || r.kind === 'login.locked' || r.kind === 'login.codefail' || r.kind === 'pin.fail' || r.kind === 'pin.blocked'); }).length,
+        peopleWithPassword: db.read('Users').filter(function (u) { return bool(u.active) && trim(u.passwordHash); }).length,
+        devices: active(db.read('Devices')).length,
+        events: rows.slice(0, Math.min(num(p.limit) || 100, 300)).map(function (r) {
+          var u = users[r.userId];
+          return { id: r.id, at: r.at, kind: r.kind, name: u ? staffName(u) : '', actor: r.actor, detail: r.detail, ip: r.ip, agent: r.agent };
+        }) };
+    } };
+
     /* ---------- dispatcher ---------- */
 
     function execute(action, payload, user, req) {
@@ -4499,10 +4885,12 @@ var RestoCore = (function () {
       }) : run();
     }
 
-    function handle(req) {
+    function handle(req, meta) {
       try {
         req = req || {};
+        reqMeta = meta || {};
         var data;
+        if (req.action === 'auth.login' || req.action === 'auth.join' || req.action === 'auth.pinLogin' || req.action === 'staff.roster') rateLimit();
         if (req.action === 'auth.login') data = db.lock(function () { return login(req.payload || {}); });
         else if (req.action === 'auth.join') data = db.lock(function () { return joinShop(req.payload || {}); });
         else if (req.action === 'auth.pinLogin') data = db.lock(function () { return pinLogin(req.payload || {}); });
@@ -4536,7 +4924,7 @@ var RestoCore = (function () {
           var system = { username: 'setup', role: 'owner' };
           var row = saveRow('Users', 'USR', { username: (opts.ownerUsername || 'owner').toLowerCase(),
             displayName: opts.ownerName || 'Owner', role: 'owner', active: true }, system, 'User');
-          setPassword(row.id, opts.ownerPassword);
+          setPassword(row.id, opts.ownerPassword, row.username);
           created = row.username;
         }
         return { ownerCreated: created };
@@ -4571,6 +4959,9 @@ var RestoCore = (function () {
     INVOICE_STATUSES: INVOICE_STATUSES,
     createApi: createApi,
     hashPassword: hashPassword,
+    verifyHash: verifyHash,
+    legacyHash: legacyHash,
+    totp: totp,
     sha256: sha256,
     util: { round: round, addDays: addDays, shiftMonth: shiftMonth, monthEnd: monthEnd, list: list, bool: bool }
   };

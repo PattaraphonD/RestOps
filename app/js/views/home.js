@@ -66,6 +66,7 @@ const TASK = {
   promotionsEnding: { icon: 'info', cls: '', href: () => '#/menu/promotions' },
   closeYesterday: { icon: 'clipboard', cls: 'bad', href: (x) => `#/close/${x.items[0].date}` },
   backup: { icon: 'download', cls: 'warn', href: () => '#/more/settings' },
+  securityAlert: { icon: 'alert', cls: 'bad', href: () => '#/more/security' },
 };
 
 /** "งานวันนี้": what this person should do now, each row one tap from the place to do it. */

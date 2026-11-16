@@ -97,8 +97,12 @@ export async function call(action, payload = {}, opts = {}) {
   return res.data;
 }
 
-export async function login(username, password) {
-  const data = await call('auth.login', { username, password });
+export async function login(username, password, code) {
+  // A device that signed in to this account before keeps a token for it: the account can't be locked away from it
+  // by someone guessing the password elsewhere. It survives signing out (it is not a session).
+  const knownKey = `ro.known:${session.mode}:${String(username).trim().toLowerCase()}`;
+  const data = await call('auth.login', { username, password, code: code || undefined, known: store.get(knownKey) || undefined });
+  if (data.known) store.set(knownKey, data.known);
   session.save(data.token, data.user);
   return data.user;
 }

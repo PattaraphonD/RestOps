@@ -6,6 +6,7 @@ import {
 } from '../ui.js';
 import { list, signOut } from '../app.js';
 import { t, defaults } from '../i18n.js';
+import { renderSecurity } from './security.js';
 import { renderLog as production } from './production.js';
 import { renderChannels as channels } from './channels.js';
 import { renderManual as sop } from './sop.js';
@@ -20,7 +21,7 @@ export async function render(ctx) {
   // Team pages live under the ทีม tab now; old links (bookmarks, notes) go there.
   const moved = { team: 'people', schedule: 'schedule', timesheet: 'timesheet', mytime: 'mytime', leave: 'leave' };
   if (moved[sub]) { location.replace(`#/team/${moved[sub]}${arg ? '/' + arg : ''}`); return; }
-  const pages = { expenses, suppliers, settings, account, production, channels, sop, categories };
+  const pages = { expenses, suppliers, settings, account, production, channels, sop, categories, security: renderSecurity };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -50,6 +51,7 @@ function index({ el, setTitle, state, can }) {
         ${item('#/more/channels', 'truck', t('channels.title'), t('more.nChannels', { n: (state.boot.channels || []).filter((c) => c.active).length }))}
         ${item('#/more/categories', 'grid', t('cat.title'), t('cat.moreSub', { n: (state.boot.categories || []).filter((c) => c.active).length }))}
         ${can('owner') ? item('#/more/settings', 'settings', t('more.settings'), t('more.settingsSub')) : ''}
+        ${can('owner') ? item('#/more/security', 'alert', t('sec.title'), u.twoStep ? t('sec.menuOn') : t('sec.menuOff')) : ''}
       </ul></div></section>` : ''}
     <section class="section"><div class="section-head"><h2>${t('more.kitchen')}</h2></div>
       <div class="card"><ul class="list">
@@ -374,6 +376,9 @@ function account(ctx) {
           <span class="hint">${t('account.pinHint')}</span></label>
         <button class="btn primary block" type="submit">${t('account.updatePin')}</button>
       </form></section>` : ''}
+    <section class="section"><div class="section-head"><h2>${t('account.devices')}</h2></div>
+      <div class="card pad"><p class="small muted" style="margin-top:0">${t('account.devicesText')}</p>
+        <button class="btn block" id="out-others">${icon('logout')}${t('account.signOutOthers')}</button></div></section>
     <section class="section" ${u.role !== 'owner' && u.hasPin ? raw('hidden') : ''}><div class="section-head"><h2>${t('account.changePassword')}</h2></div>
       <form id="pw" class="card pad" novalidate>
         <label class="field"><span class="label">${t('account.currentPw')}</span><input class="input" type="password" name="current" autocomplete="current-password"></label>
@@ -389,6 +394,10 @@ function account(ctx) {
     try { if (th === 'system') localStorage.removeItem('ro.theme'); else localStorage.setItem('ro.theme', th); } catch { /* ignore */ }
     applyTheme();
     $$('[data-theme-opt]', el).forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  }));
+  $('#out-others').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+    await call('auth.signOutEverywhere', {});
+    toast(t('account.signedOutOthers'), 'good', 5000);
   }));
   const pinf = $('#pinf');
   if (pinf) pinf.addEventListener('submit', (e) => {

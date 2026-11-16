@@ -200,6 +200,9 @@ function renderPasswordLogin() {
           <input class="input" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
         <label class="field"><span class="label">${t('login.password')}</span>
           <input class="input" name="password" type="password" autocomplete="current-password" required></label>
+        <label class="field hidden" id="code-field"><span class="label">${t('login.code')}</span>
+          <input class="input pin-input" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="12" spellcheck="false">
+          <span class="hint">${t('login.codeHint')}</span></label>
         <button class="btn primary block" type="submit">${t('login.signIn')}</button>
       </form>
       <div class="divider">${t('login.or')}</div>
@@ -227,19 +230,37 @@ function renderPasswordLogin() {
       }
       session.setApiUrl(urlInput.value);
       session.setMode('remote');
-      await login(form.username.value, form.password.value);
+      try { await login(form.username.value, form.password.value, form.code.value.trim()); } catch (err) {
+        // 2-step verification is on for this account: ask for the code, keep what was typed.
+        if (err.code === 'TOTP' && $('#code-field').classList.contains('hidden')) {
+          $('#code-field').classList.remove('hidden');
+          form.code.focus();
+          return;
+        }
+        throw err;
+      }
       location.hash = '#/home';
       render();
     }, form);
   });
-  $('#demo-btn').addEventListener('click', (e) => busy(e.currentTarget, async () => {
+  $('#demo-btn').addEventListener('click', (e) => { const btn = e.currentTarget; busy(btn, async () => {
     session.setMode('demo');
-    e.currentTarget.querySelector('span').textContent = t('login.preparing');
-    await login('owner', 'demo1234');
+    btn.querySelector('span').textContent = t('login.preparing');
+    try { await login('owner', 'demo1234', form.code.value.trim()); } catch (err) {
+      // Someone turned on 2-step verification in the sample shop: ask for its code here too.
+      if (err.code === 'TOTP' && $('#code-field').classList.contains('hidden')) {
+        $('#code-field').classList.remove('hidden');
+        form.code.focus();
+        btn.querySelector('span').textContent = t('login.demo');
+        return;
+      }
+      btn.querySelector('span').textContent = t('login.demo');
+      throw err;
+    }
     location.hash = '#/home';
     toast(t('login.demoWelcome'), 'info');
     render();
-  }, form));
+  }, form); });
   showFormError(form, null);
 }
 

@@ -1069,3 +1069,16 @@ a.my-shift { display: block; color: inherit; text-decoration: none; margin-botto
 .slip-print .slip-table tr.total td { border-top: 2px solid #000; }
 .slip-print .slip-sign { display: flex; justify-content: space-between; margin-top: 18mm; }
 @media (max-width: 420px) { .adj-form { grid-template-columns: 1fr 1fr; } }
+
+/* ---------- security page (v2.6) ---------- */
+.sec-card { border-left: 6px solid var(--warn); }
+.sec-card.is-on { border-left-color: var(--good); }
+.sec-head { display: flex; gap: 10px; align-items: flex-start; }
+.sec-head svg { width: 22px; height: 22px; flex: none; margin-top: 2px; color: var(--warn-ink); }
+.sec-card.is-on .sec-head svg { color: var(--good-ink); }
+.sec-qr { width: 200px; max-width: 70%; margin: 10px auto; padding: 8px; background: #fff; border-radius: 12px; }
+.sec-qr svg { display: block; width: 100%; height: auto; }
+.sec-codes { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+.sec-codes code { padding: 10px; border-radius: 10px; background: var(--surface-3); font-size: 16px; font-weight: 700; text-align: center; letter-spacing: .06em; }
+.sec-log .row { align-items: flex-start; }
+.sec-tips { margin: 0; padding-left: 20px; display: grid; gap: 8px; font-size: 14px; color: var(--ink-2); }
