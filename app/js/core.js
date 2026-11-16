@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.4.1';
+  var VERSION = '2.5.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -25,7 +25,9 @@ var RestoCore = (function () {
       // team profile, PIN sign-in and permissions (v2.2)
       'nickname', 'fullName', 'position', 'phone', 'startDate', 'colour', 'permissions', 'pinHash', 'pinSalt', 'pinSetAt',
       // locked by repeated wrong PINs until the owner sets a new one
-      'pinBlocked'],
+      'pinBlocked',
+      // Pay (v2.5; owner only): how and how often, the rate, social security, where to transfer.
+      'payType', 'payRate', 'payCycle', 'ssoEnrolled', 'payBank', 'payAccount', 'endDate'],
     // New columns are always APPENDED so existing sheets upgrade in place (Server.gs adds them).
     Suppliers: ['id', 'name', 'contactName', 'phone', 'email', 'notes', 'active',
       'createdAt', 'updatedAt', 'updatedBy', 'version', 'leadTimeDays', 'paymentTermsDays',
@@ -94,17 +96,26 @@ var RestoCore = (function () {
     SchedulePublishes: ['id', 'weekStart', 'publishedAt', 'publishedBy'],
     // Time clock (v2.4): one row per clock-in; times are server ISO, the date is the shop's (Thai) date. Distances only, no coordinates.
     TimeEntries: ['id', 'userId', 'date', 'shiftId', 'clockIn', 'clockOut', 'breakMinutes', 'inPlace', 'inDistance', 'outPlace', 'outDistance',
-      'source', 'needsReview', 'missedOut', 'approvedAt', 'approvedBy', 'note', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+      'source', 'needsReview', 'missedOut', 'approvedAt', 'approvedBy', 'note', 'active', 'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version',
+      // the pay run that paid this time (v2.5): never paid twice, and late approvals are carried into the next run
+      'paidRunId'],
     // Leave requests (v2.4): calendar days from–to inclusive.
     LeaveRequests: ['id', 'userId', 'type', 'fromDate', 'toDate', 'days', 'reason', 'status', 'decidedBy', 'decidedAt', 'decisionNote',
-      'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version']
+      'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+    // Payroll (v2.5): a pay run (one cycle, one period) and its payslips; adjustments are JSON [{kind, label, amount}].
+    PayRuns: ['id', 'cycle', 'periodStart', 'periodEnd', 'payDate', 'status', 'paidAt', 'paidBy', 'expenseId', 'note',
+      'createdAt', 'createdBy', 'updatedAt', 'updatedBy', 'version'],
+    Payslips: ['id', 'runId', 'userId', 'name', 'position', 'payType', 'payRate', 'payCycle', 'workedMinutes', 'normalMinutes', 'otMinutes',
+      'holidayMinutes', 'holidayOtMinutes', 'daysWorked', 'paidLeaveDays', 'unpaidLeaveDays', 'absentDays', 'basePay', 'otPay', 'holidayPay',
+      'leavePay', 'absenceDeduction', 'wages', 'additions', 'deductions', 'sso', 'employerSso', 'gross', 'net', 'hourRate', 'dayRate',
+      'adjustments', 'payBank', 'payAccount', 'carriedDays', 'leaveWorkedDays', 'employedDays', 'note', 'createdAt', 'updatedAt', 'updatedBy', 'version']
   };
 
   // Columns that must be stored as plain text in the sheet (so "2026-11-07" stays a string).
   var TEXT_COLUMNS = ['id', 'key', 'value', 'date', 'username', 'phone', 'invoiceRef', 'menuItemId',
     'ingredientId', 'supplierId', 'refId', 'passwordHash', 'salt', 'createdAt', 'updatedAt',
     'poId', 'poLineId', 'poNumber', 'invoiceNo', 'invoiceId', 'orderDate', 'expectedDate', 'invoiceDate', 'dueDate',
-    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt', 'shiftId', 'clockIn', 'clockOut', 'approvedAt', 'fromDate', 'toDate', 'decidedAt'];
+    'sentAt', 'closedAt', 'reviewedAt', 'paidAt', 'paymentRef', 'prepId', 'runNo', 'unit', 'channelId', 'promoId', 'channelIds', 'weekdays', 'startDate', 'endDate', 'ownerId', 'allergens', 'code', 'categoryId', 'taxId', 'branch', 'bankAccountNo', 'pinHash', 'pinSalt', 'tokenHash', 'startDate', 'lastUserId', 'userId', 'templateId', 'startTime', 'endTime', 'weekStart', 'publishedAt', 'shiftId', 'clockIn', 'clockOut', 'approvedAt', 'fromDate', 'toDate', 'decidedAt', 'runId', 'periodStart', 'periodEnd', 'payDate', 'paidAt', 'expenseId', 'payAccount', 'adjustments', 'paidRunId', 'endDate'];
 
   var PO_STATUSES = ['draft', 'sent', 'partial', 'received', 'closed', 'cancelled'];
   var INVOICE_STATUSES = ['matched', 'exception', 'noPo', 'approved', 'disputed', 'paid'];
@@ -128,7 +139,13 @@ var RestoCore = (function () {
     shopLat: '', shopLng: '',         // the shop's position (set by the owner standing in the shop)
     clockRadius: '150',               // metres: further than this is marked "outside the shop" (never blocked)
     lateGraceMinutes: '5',
-    leaveSickDays: '30', leavePersonalDays: '3', leaveVacationDays: '6'   // per year (Thai labour-law minimums)
+    leaveSickDays: '30', leavePersonalDays: '3', leaveVacationDays: '6',  // per year (Thai labour-law minimums)
+    // Payroll (v2.5)
+    payNormalMinutes: '480',          // a normal working day; more is overtime
+    otMinMinutes: '30',               // overtime counts from this many minutes over
+    payWeeklyDay: '0',                // weekly pay day: 0 = Sunday (the end of the Monday–Sunday week) … 6 = Saturday
+    ssoRate: '5', ssoMinBase: '1650', ssoMaxBase: '17500',   // social security: % of wages within this monthly base (law changes: editable)
+    payHolidays: ''                   // public holidays, comma-separated YYYY-MM-DD
   };
   var CHANNEL_TYPES = ['dineIn', 'takeaway', 'delivery', 'other'];
   var BACKUP_REMINDER_DAYS = 30;   // remind the owner to download a backup after a month
@@ -293,7 +310,7 @@ var RestoCore = (function () {
   // Messages are written in English in the code below and translated on the way out
   // when the app asks for Thai (request field `lang: 'th'`).
   var TH_LABELS = {
-    'Name': 'ชื่อ', 'Unit': 'หน่วย', 'Shift': 'กะ', 'Shift name': 'ชื่อกะ', 'Reason': 'เหตุผล', 'First day': 'วันแรก', 'Last day': 'วันสุดท้าย', 'Leave request': 'คำขอลา', 'Year': 'ปี', 'Time entry': 'เวลาทำงาน', 'Radius': 'รัศมี', 'Grace': 'เวลาผ่อนผัน', 'Leave days': 'จำนวนวันลา', 'Shop position': 'ตำแหน่งร้าน', 'Break': 'เวลาพัก', 'Person': 'พนักงาน', 'Week': 'สัปดาห์', 'Cost per unit': 'ราคาต่อหน่วย', 'Minimum level': 'ระดับขั้นต่ำ',
+    'Name': 'ชื่อ', 'Unit': 'หน่วย', 'Shift': 'กะ', 'Shift name': 'ชื่อกะ', 'Reason': 'เหตุผล', 'Rate': 'อัตราค่าจ้าง', 'Pay run': 'รอบจ่าย', 'Payslip': 'สลิป', 'Item': 'รายการ', 'Holiday': 'วันหยุด', 'Social security': 'ประกันสังคม', 'First day': 'วันแรก', 'Last day': 'วันสุดท้าย', 'Leave request': 'คำขอลา', 'Year': 'ปี', 'Time entry': 'เวลาทำงาน', 'Radius': 'รัศมี', 'Grace': 'เวลาผ่อนผัน', 'Leave days': 'จำนวนวันลา', 'Shop position': 'ตำแหน่งร้าน', 'Break': 'เวลาพัก', 'Person': 'พนักงาน', 'Week': 'สัปดาห์', 'Cost per unit': 'ราคาต่อหน่วย', 'Minimum level': 'ระดับขั้นต่ำ',
     'Pack size': 'ขนาดแพ็ก', 'Minimum order': 'จำนวนสั่งขั้นต่ำ', 'Pack price': 'ราคาต่อแพ็ก', 'Supplier item': 'แหล่งซื้อ',
     'Supplier name': 'ชื่อซัพพลายเออร์', 'Dish name': 'ชื่อเมนู', 'Selling price': 'ราคาขาย', 'Category': 'หมวดหมู่',
     'Amount': 'จำนวนเงิน', 'Username': 'ชื่อผู้ใช้', 'Target food cost %': 'เป้าหมายต้นทุนอาหาร %', 'Date': 'วันที่',
@@ -409,6 +426,18 @@ var RestoCore = (function () {
     [/^This overlaps another time entry of this person\.$/, 'เวลานี้ซ้อนกับเวลาทำงานอื่นของคนนี้'],
     [/^Shop position is not a real place\.$/, 'ตำแหน่งร้านไม่ถูกต้อง'],
     [/^Choose a leave type\.$/, 'เลือกประเภทการลา'],
+    [/^The owner is not on the payroll\.$/, 'เจ้าของร้านไม่อยู่ในบัญชีเงินเดือน'],
+    [/^Adjustments must be a list\.$/, 'รายการเพิ่ม/หักไม่ถูกต้อง'],
+    [/^Social security rate looks too high\.$/, 'อัตราประกันสังคมสูงเกินไป ตรวจสอบอีกครั้ง'],
+    [/^A normal day must be at least 1 hour\.$/, 'เวลาทำงานปกติต่อวันต้องอย่างน้อย 1 ชั่วโมง'],
+    [/^The lowest social security base is above the highest\.$/, 'ฐานประกันสังคมต่ำสุดสูงกว่าฐานสูงสุด'],
+    [/^Choose how this person is paid\.$/, 'เลือกรูปแบบค่าจ้าง'],
+    [/^Choose how often this person is paid\.$/, 'เลือกรอบการจ่าย'],
+    [/^A monthly salary is paid monthly\.$/, 'เงินเดือนต้องจ่ายรายเดือน'],
+    [/^There is already a pay run for this period\.$/, 'มีรอบจ่ายของช่วงนี้แล้ว'],
+    [/^This pay run is already paid\.$/, 'รอบนี้จ่ายแล้ว แก้ไขไม่ได้'],
+    [/^This pay run has no payslips\.$/, 'รอบนี้ยังไม่มีสลิป'],
+    [/^Choose a day of the week\.$/, 'เลือกวันในสัปดาห์'],
     [/^The last day can't be before the first day\.$/, 'วันสุดท้ายต้องไม่ก่อนวันแรก'],
     [/^Leave can be at most 60 days at a time\.$/, 'ลาได้ครั้งละไม่เกิน 60 วัน'],
     [/^Leave more than 30 days ago is added by a manager\.$/, 'การลาที่ผ่านมาเกิน 30 วัน ให้ผู้จัดการเป็นคนบันทึก'],
@@ -1848,15 +1877,20 @@ var RestoCore = (function () {
       return row;
     } };
 
-    A['expenses.list'] = { role: 'manager', write: false, fn: function (p) {
-      return db.read('Expenses').filter(function (r) { return inRange(r.date, p.from, p.to); })
+    function isPayrollExpense(r) { return String(r.note || '').indexOf('รอบจ่ายเงินเดือน ') === 0; }
+    A['expenses.list'] = { role: 'manager', write: false, fn: function (p, user) {
+      return db.read('Expenses').filter(function (r) { return inRange(r.date, p.from, p.to) && (user.role === 'owner' || !isPayrollExpense(r)); })
         .sort(newestFirst).slice(0, num(p.limit) || 300).map(function (r) {
           return { id: r.id, date: r.date, category: r.category, description: r.description, amount: num(r.amount),
             paymentMethod: r.paymentMethod, note: r.note, voided: bool(r.voided), createdAt: r.createdAt, createdBy: r.createdBy };
         });
     } };
 
-    A['expenses.void'] = { role: 'manager', write: true, fn: function (p, user) { voidRow('Expenses', p.id, user, 'Expense'); return true; } };
+    A['expenses.void'] = { role: 'manager', write: true, fn: function (p, user) {
+      var ex = findOrFail('Expenses', trim(p.id), 'Expense');
+      if (isPayrollExpense(ex) && user.role !== 'owner') fail('FORBIDDEN', "You don't have permission for this. Ask the owner to turn it on.");
+      voidRow('Expenses', p.id, user, 'Expense'); return true;
+    } };
 
     /* Reports */
     function periodTotals(from, to, sales, purchases, expenses, moves) {
@@ -3276,7 +3310,16 @@ var RestoCore = (function () {
           if (Math.abs(deg) > (k === 'shopLat' ? 90 : 180)) fail('VALIDATION', 'Shop position is not a real place.');
           v = String(Math.round(deg * 1e6) / 1e6);
         }
-        if (['clockRadius', 'lateGraceMinutes', 'leaveSickDays', 'leavePersonalDays', 'leaveVacationDays'].indexOf(k) >= 0) {
+        if (k === 'payHolidays') {
+          var days = list(v);
+          days.forEach(function (d) { reqDate(d, 'Holiday'); });
+          v = days.filter(function (d, i) { return days.indexOf(d) === i; }).sort().join(', ');
+        }
+        if (k === 'payWeeklyDay' && [0, 1, 2, 3, 4, 5, 6].indexOf(Number(v)) < 0) fail('VALIDATION', 'Choose a day of the week.');
+        if (['ssoRate', 'ssoMinBase', 'ssoMaxBase'].indexOf(k) >= 0) v = String(reqNum(v, 'Social security', { min: 0 }));
+        if (k === 'ssoRate' && Number(v) > 15) fail('VALIDATION', 'Social security rate looks too high.');
+        if (k === 'payNormalMinutes' && Number(v) < 60) fail('VALIDATION', 'A normal day must be at least 1 hour.');
+        if (['clockRadius', 'lateGraceMinutes', 'leaveSickDays', 'leavePersonalDays', 'leaveVacationDays', 'payNormalMinutes', 'otMinMinutes'].indexOf(k) >= 0) {
           var whole = reqNum(v, k === 'clockRadius' ? 'Radius' : k === 'lateGraceMinutes' ? 'Grace' : 'Leave days', { min: 0 });
           if (Math.round(whole) !== whole) fail('VALIDATION', 'Use whole numbers.');
           v = String(whole);
@@ -3286,7 +3329,9 @@ var RestoCore = (function () {
         if (existing[k]) db.updateWhere('Settings', function (r) { return r.key === k; }, { value: v, updatedAt: ts, updatedBy: user.username });
         else db.append('Settings', [{ key: k, value: v, updatedAt: ts, updatedBy: user.username }]);
       });
-      return settings();
+      var after = settings();
+      if (num(after.ssoMinBase) > num(after.ssoMaxBase)) fail('VALIDATION', 'The lowest social security base is above the highest.');
+      return after;
     } };
 
     /* ---------- shift schedule (v2.3): templates, the week, publishing, my shifts ---------- */
@@ -4055,6 +4100,373 @@ var RestoCore = (function () {
       });
       return out.sort(function (a, b) { return a.date.localeCompare(b.date); });
     }
+
+    /* ---------- payroll (v2.5): pay setup, pay runs from approved time, payslips (owner only) ---------- */
+
+    var PAY_TYPES = ['monthly', 'daily', 'hourly'];
+    var PAY_CYCLES = ['monthly', 'weekly'];
+    var OT_RATE = 1.5, HOLIDAY_OT_RATE = 3;          // Thai labour law
+    var HOLIDAY_RATE = { monthly: 1, daily: 2, hourly: 2 };   // extra for holiday hours (monthly pay already covers the day)
+    var PAID_LEAVE = ['sick', 'personal', 'vacation'];
+    var money2 = function (n) { return Math.round(n * 100) / 100; };
+    var PAYROLL_NOTE = 'รอบจ่ายเงินเดือน ';   // marks the wages expense a pay run made (owner-only in the expense list)
+
+    function payPerson(u) {
+      return { id: u.id, name: staffName(u), position: u.position || '', role: u.role, active: bool(u.active), startDate: trim(u.startDate),
+        payType: trim(u.payType), payRate: num(u.payRate), payCycle: trim(u.payCycle), ssoEnrolled: u.ssoEnrolled === '' || u.ssoEnrolled === undefined ? true : bool(u.ssoEnrolled),
+        payBank: u.payBank || '', payAccount: u.payAccount || '', endDate: trim(u.endDate) };
+    }
+    function paySettings() {
+      var st = settings(), n = function (k, d) { return trim(st[k]) === '' ? d : num(st[k]); };
+      return { normal: n('payNormalMinutes', 480), otMin: n('otMinMinutes', 30), weeklyDay: n('payWeeklyDay', 0),
+        ssoRate: n('ssoRate', 5), ssoMin: n('ssoMinBase', 1650), ssoMax: n('ssoMaxBase', 17500),
+        holidays: list(st.payHolidays).filter(function (d) { return /^\d{4}-\d{2}-\d{2}$/.test(d); }) };
+    }
+    /** The period a date falls in, and its pay day. */
+    function payPeriod(cycle, date, ps) {
+      if (cycle === 'monthly') {
+        var m = date.slice(0, 7);
+        return { periodStart: m + '-01', periodEnd: monthEnd(m), payDate: monthEnd(m) };
+      }
+      // Paid on the chosen weekday on or after the week ends (Sunday): Sunday = that day, Monday = the next day …
+      var ws = weekStartOf(date), end = addDays(ws, 6);
+      return { periodStart: ws, periodEnd: end, payDate: addDays(end, ps.weeklyDay % 7) };
+    }
+
+    A['payroll.people'] = { role: 'owner', write: false, fn: function () {
+      return db.read('Users').filter(function (u) { return u.role !== 'owner'; }).sort(rolesFirst).map(payPerson);
+    } };
+
+    A['payroll.setPay'] = { role: 'owner', write: true, fn: function (p, user) {
+      var u = findOrFail('Users', trim(p.userId), 'Person');
+      if (u.role === 'owner') fail('VALIDATION', 'The owner is not on the payroll.');
+      var type = trim(p.payType), cycle = trim(p.payCycle);
+      if (PAY_TYPES.indexOf(type) < 0) fail('VALIDATION', 'Choose how this person is paid.');
+      if (PAY_CYCLES.indexOf(cycle) < 0) fail('VALIDATION', 'Choose how often this person is paid.');
+      if (type === 'monthly' && cycle !== 'monthly') fail('VALIDATION', 'A monthly salary is paid monthly.');
+      var rate = round(reqNum(p.payRate, 'Rate', { positive: true }));
+      var patch = { payType: type, payRate: rate, payCycle: cycle, ssoEnrolled: p.ssoEnrolled === undefined ? true : bool(p.ssoEnrolled),
+        payBank: optStr(p.payBank, 60), payAccount: optStr(p.payAccount, 40), updatedAt: nowIso(), updatedBy: user.username,
+        endDate: trim(p.endDate) ? reqDate(p.endDate, 'Last day') : '' };
+      db.updateWhere('Users', function (r) { return r.id === u.id; }, patch);
+      var merged = {}; for (var k in u) merged[k] = u[k]; for (k in patch) merged[k] = patch[k];
+      return payPerson(merged);
+    } };
+
+    /** Paid leave days still available this year before `date` (sick/personal/vacation entitlements). */
+    function paidLeaveLeft(u, type, beforeDate) {
+      var bal = balanceOf(u, beforeDate.slice(0, 4))[type];
+      if (bal.entitled === null) return 0;
+      var usedBefore = sum(db.read('LeaveRequests').filter(function (l) {
+        return l.userId === u.id && l.type === type && l.status === 'approved' && l.fromDate < beforeDate && l.fromDate.slice(0, 4) === beforeDate.slice(0, 4);
+      }), function (l) { return daysInclusive(l.fromDate, l.toDate < beforeDate ? l.toDate : addDays(beforeDate, -1)); });
+      return Math.max(0, bal.entitled - usedBefore);
+    }
+
+    /** The first period of this cycle that was paid in the app: approvals after it are carried into later runs. */
+    function payrollStart(cycle) {
+      return db.read('PayRuns').filter(function (r) { return r.cycle === cycle && r.status === 'paid'; })
+        .reduce(function (m, r) { return !m || r.periodStart < m ? r.periodStart : m; }, '');
+    }
+    /** Approved, finished time this run pays: the period's, plus earlier time approved too late for its own run. */
+    function entriesForRun(u, run) {
+      var from = run.periodStart, to = run.periodEnd, since = payrollStart(run.cycle);
+      return liveEntries().filter(function (e) {
+        if (e.userId !== u.id || !trim(e.approvedAt) || !trim(e.clockOut)) return false;
+        if (trim(e.paidRunId)) return e.paidRunId === run.id;          // never paid twice (also across a change of cycle)
+        if (e.date >= from && e.date <= to) return true;
+        return !!since && e.date >= since && e.date < from;            // approved after its own period was paid
+      });
+    }
+
+    /** One person's pay for a period: approved time, leave, absences, SSO. */
+    function computeSlip(u, run, ps, adjustments, ssoSoFar) {
+      var pp = payPerson(u), from = run.periodStart, to = run.periodEnd;
+      var holidays = {}; ps.holidays.forEach(function (d) { holidays[d] = 1; });
+      var shifts = byId(db.read('Shifts')), byDay = {}, carried = {};
+      entriesForRun(u, run).forEach(function (e) {
+        byDay[e.date] = (byDay[e.date] || 0) + (entryOut(e, shifts).workedMinutes || 0);
+        if (e.date < from) carried[e.date] = 1;
+      });
+      var hourly = pp.payType === 'hourly';
+      var normal = 0, ot = 0, hol = 0, holOt = 0, daysWorked = 0, worked = 0;
+      Object.keys(byDay).forEach(function (d) {
+        var w = byDay[d], over = Math.max(0, w - ps.normal), isOt = over >= ps.otMin;
+        // Hourly pay never loses worked minutes: a little over the normal day (under the OT minimum) is paid at 1×.
+        var plain = Math.min(w, ps.normal) + (hourly && !isOt ? over : 0), extra = isOt ? over : 0;
+        worked += w;
+        if (holidays[d]) { hol += plain; holOt += extra; }
+        else { normal += plain; ot += extra; if (w > 0) daysWorked++; }
+      });
+      // Leave in the period, one row per day; a leave day that was also worked counts as worked.
+      var paidLeave = 0, unpaidLeave = 0, leaveWorked = 0, left = {};
+      PAID_LEAVE.forEach(function (t) { left[t] = paidLeaveLeft(u, t, from); });
+      leaveDays(from, to, true).filter(function (l) { return l.userId === u.id; }).forEach(function (l) {
+        if (byDay[l.date] > 0) { leaveWorked++; return; }
+        if (left[l.type] > 0) { left[l.type]--; paidLeave++; } else unpaidLeave++;
+      });
+      var absent = {};
+      absencesBetween(from, to).forEach(function (sh) { if (sh.userId === u.id) absent[sh.date] = 1; });
+      var absentDays = Object.keys(absent).length;
+      var rate = pp.payRate, dayMin = ps.normal, base = 0, hourRate = 0, dayRate = 0, leavePay = 0, deduct = 0, employed = 0;
+      if (pp.payType === 'monthly') {
+        dayRate = rate / 30; hourRate = dayRate / (dayMin / 60);
+        // Joined or left during the month: the salary counts only the days employed.
+        var days = dayCount(from, to), started = pp.startDate && pp.startDate > from ? pp.startDate : from;
+        var ended = pp.endDate && pp.endDate < to ? pp.endDate : to;
+        employed = started > ended ? 0 : dayCount(started, ended);
+        base = employed === days ? rate : rate * employed / days;
+        deduct = Math.min(base, (absentDays + unpaidLeave) * dayRate);
+      } else if (pp.payType === 'daily') {
+        dayRate = rate; hourRate = rate / (dayMin / 60);
+        base = daysWorked * rate; leavePay = paidLeave * rate;
+      } else {
+        hourRate = rate; dayRate = rate * dayMin / 60;
+        base = normal / 60 * rate; leavePay = paidLeave * dayRate;
+      }
+      var otPay = ot / 60 * hourRate * OT_RATE + holOt / 60 * hourRate * HOLIDAY_OT_RATE;
+      var holidayPay = hol / 60 * hourRate * (HOLIDAY_RATE[pp.payType] || 2);
+      var wages = money2(Math.max(0, base + otPay + holidayPay + leavePay - deduct));
+      var adds = 0, subs = 0;
+      (adjustments || []).forEach(function (a) { if (a.kind === 'add') adds += num(a.amount); else subs += num(a.amount); });
+      var sso = 0;
+      if (pp.ssoEnrolled && ps.ssoRate > 0) {
+        var cap = Math.round(ps.ssoMax * ps.ssoRate / 100);
+        if (run.cycle === 'monthly') sso = Math.round(Math.min(Math.max(wages, ps.ssoMin), ps.ssoMax) * ps.ssoRate / 100);
+        else sso = Math.min(Math.round(wages * ps.ssoRate / 100), Math.max(0, cap - (ssoSoFar || 0)));
+        if (wages <= 0) sso = 0;
+      }
+      var gross = money2(wages + adds);
+      return { userId: u.id, name: pp.name, position: pp.position, payType: pp.payType, payRate: rate, payCycle: pp.payCycle,
+        workedMinutes: worked, normalMinutes: normal, otMinutes: ot, holidayMinutes: hol, holidayOtMinutes: holOt, daysWorked: daysWorked,
+        paidLeaveDays: paidLeave, unpaidLeaveDays: unpaidLeave, absentDays: absentDays,
+        basePay: money2(base), otPay: money2(otPay), holidayPay: money2(holidayPay), leavePay: money2(leavePay), absenceDeduction: money2(deduct),
+        wages: wages, additions: money2(adds), deductions: money2(subs), sso: sso, employerSso: sso, gross: gross, net: money2(gross - sso - subs),
+        adjustments: JSON.stringify(adjustments || []), hourRate: money2(hourRate), dayRate: money2(dayRate),
+        payBank: pp.payBank, payAccount: pp.payAccount, carriedDays: Object.keys(carried).length, leaveWorkedDays: leaveWorked,
+        employedDays: employed };
+    }
+    var SLIP_NUMBERS = ['payRate', 'workedMinutes', 'normalMinutes', 'otMinutes', 'holidayMinutes', 'holidayOtMinutes', 'daysWorked', 'paidLeaveDays',
+      'unpaidLeaveDays', 'absentDays', 'basePay', 'otPay', 'holidayPay', 'leavePay', 'absenceDeduction', 'wages', 'additions', 'deductions',
+      'sso', 'employerSso', 'gross', 'net', 'hourRate', 'dayRate', 'carriedDays', 'leaveWorkedDays', 'employedDays', 'version'];
+    function slipOut(s) {
+      var o = {}; SCHEMA.Payslips.forEach(function (c) { o[c] = s[c]; });
+      SLIP_NUMBERS.forEach(function (c) { o[c] = num(s[c]); });
+      try { o.adjustments = JSON.parse(s.adjustments || '[]'); } catch (e) { o.adjustments = []; }
+      return o;
+    }
+    /** SSO already taken from this person in other weekly runs paid out in the same month. */
+    function ssoSoFar(userId, run) {
+      var month = run.payDate.slice(0, 7), runs = byId(db.read('PayRuns'));
+      return sum(db.read('Payslips').filter(function (s) {
+        var r = runs[s.runId];
+        return s.userId === userId && r && r.id !== run.id && r.status === 'paid' && r.cycle === 'weekly' && r.payDate.slice(0, 7) === month;
+      }), function (s) { return num(s.sso); });
+    }
+    function onCycle(run) {
+      var hasTime = {};
+      liveEntries().forEach(function (e) { if (e.date >= run.periodStart && e.date <= run.periodEnd && trim(e.approvedAt)) hasTime[e.userId] = 1; });
+      return db.read('Users').filter(function (u) {
+        return u.role !== 'owner' && trim(u.payCycle) === run.cycle && num(u.payRate) > 0 && (bool(u.active) || hasTime[u.id]);
+      }).sort(rolesFirst);
+    }
+    function runWarnings(run) {
+      var unapproved = liveEntries().filter(function (e) { return e.date >= run.periodStart && e.date <= run.periodEnd && !trim(e.approvedAt); }).length;
+      var worked = {};
+      liveEntries().forEach(function (e) { if (e.date >= run.periodStart && e.date <= run.periodEnd) worked[e.userId] = 1; });
+      var noPay = db.read('Users').filter(function (u) { return u.role !== 'owner' && bool(u.active) && !(num(u.payRate) > 0) && worked[u.id]; })
+        .map(function (u) { return { id: u.id, name: staffName(u) }; });
+      var firstUnapproved = liveEntries().filter(function (e) { return e.date >= run.periodStart && e.date <= run.periodEnd && !trim(e.approvedAt); })
+        .reduce(function (m, e) { return !m || e.date < m ? e.date : m; }, '');
+      var leavers = db.read('Users').filter(function (u) {
+        return u.role !== 'owner' && !bool(u.active) && trim(u.payType) === 'monthly' && trim(u.payCycle) === run.cycle && !trim(u.endDate) &&
+          db.read('Payslips').some(function (s) { return s.runId === run.id && s.userId === u.id; });
+      }).map(function (u) { return { id: u.id, name: staffName(u) }; });
+      return { unapproved: unapproved, firstUnapproved: firstUnapproved, noPay: noPay, leavers: leavers };
+    }
+    function runTotals(slips) {
+      var t = { gross: 0, deductions: 0, sso: 0, employerSso: 0, net: 0 };
+      slips.forEach(function (s) { for (var k in t) t[k] += num(s[k]); });
+      for (var k in t) t[k] = money2(t[k]);
+      return t;
+    }
+    function payerName(username) {
+      var u = db.read('Users').filter(function (x) { return x.username === username; })[0];
+      return u ? staffName(u) : (username || '');
+    }
+    function runOut(r) {
+      var slips = db.read('Payslips').filter(function (s) { return s.runId === r.id; }).map(slipOut)
+        .sort(function (a, b) { return a.name.localeCompare(b.name, 'th'); });
+      var out = { id: r.id, cycle: r.cycle, periodStart: r.periodStart, periodEnd: r.periodEnd, payDate: r.payDate, status: r.status,
+        paidAt: trim(r.paidAt), paidBy: payerName(r.paidBy), expenseId: r.expenseId || '', version: num(r.version), slips: slips };
+      var t = runTotals(slips); for (var k in t) out[k] = t[k];
+      if (r.status !== 'paid') { out.warnings = runWarnings(r); out.stale = isStale(r, slips); }
+      return out;
+    }
+    /** Would recalculating change anything (time approved, rates, leave or holidays changed since)? */
+    function isStale(run, slips) {
+      var ps = paySettings(), mine = {};
+      slips.forEach(function (s) { mine[s.userId] = s; });
+      var fresh = onCycle(run).map(function (u) {
+        var c = computeSlip(u, run, ps, mine[u.id] ? mine[u.id].adjustments : [], ssoSoFar(u.id, run));
+        return keepSlip(c, mine[u.id]) ? c : null;
+      }).filter(Boolean);
+      if (fresh.length !== slips.length) return true;
+      return fresh.some(function (c) { var s = mine[c.userId]; return !s || s.net !== c.net || s.gross !== c.gross || s.sso !== c.sso; });
+    }
+    /** Daily/hourly people with no time, no leave and nothing added get no slip (nothing to pay). */
+    function keepSlip(c, prev) {
+      var adj = prev ? (typeof prev.adjustments === 'string' ? prev.adjustments !== '[]' && prev.adjustments !== '' : prev.adjustments.length) : false;
+      return c.payType === 'monthly' || c.wages > 0 || c.paidLeaveDays > 0 || !!adj;
+    }
+    /** (Re)builds a draft run's payslips, keeping each person's adjustments. */
+    function buildSlips(run, user) {
+      var ps = paySettings(), old = {};
+      db.read('Payslips').filter(function (s) { return s.runId === run.id; }).forEach(function (s) { old[s.userId] = s; });
+      db.removeWhere('Payslips', function (s) { return s.runId === run.id; });
+      var ts = nowIso();
+      var rows = onCycle(run).map(function (u) {
+        var prev = old[u.id], adj = [];
+        try { adj = prev ? JSON.parse(prev.adjustments || '[]') : []; } catch (e) { adj = []; }
+        var c = computeSlip(u, run, ps, adj, ssoSoFar(u.id, run));
+        if (!keepSlip(c, prev)) return null;
+        var row = { id: prev ? prev.id : newId('SLP'), runId: run.id, note: prev ? prev.note || '' : '', createdAt: prev ? prev.createdAt : ts,
+          updatedAt: ts, updatedBy: user.username, version: prev ? num(prev.version) + 1 : 1 };
+        for (var k in c) row[k] = c[k];
+        return row;
+      }).filter(Boolean);
+      if (rows.length) db.append('Payslips', rows);
+    }
+    function draftRun(id) {
+      var r = findOrFail('PayRuns', trim(id), 'Pay run');
+      if (r.status === 'paid') fail('VALIDATION', 'This pay run is already paid.');
+      return r;
+    }
+
+    A['payroll.create'] = { role: 'owner', write: true, fn: function (p, user) {
+      var cycle = trim(p.cycle);
+      if (PAY_CYCLES.indexOf(cycle) < 0) fail('VALIDATION', 'Choose how often this person is paid.');
+      var per = payPeriod(cycle, reqDate(p.periodStart, 'Date'), paySettings());
+      if (db.read('PayRuns').some(function (r) { return r.cycle === cycle && r.periodStart === per.periodStart; })) fail('VALIDATION', 'There is already a pay run for this period.');
+      var ts = nowIso();
+      var run = { id: newId('PAY'), cycle: cycle, periodStart: per.periodStart, periodEnd: per.periodEnd, payDate: per.payDate, status: 'draft',
+        paidAt: '', paidBy: '', expenseId: '', note: '', createdAt: ts, createdBy: user.username, updatedAt: ts, updatedBy: user.username, version: 1 };
+      db.append('PayRuns', [run]);
+      buildSlips(run, user);
+      return runOut(run);
+    } };
+
+    A['payroll.get'] = { role: 'owner', write: false, fn: function (p) { return runOut(findOrFail('PayRuns', trim(p.id), 'Pay run')); } };
+
+    A['payroll.recalc'] = { role: 'owner', write: true, fn: function (p, user) {
+      var r = draftRun(p.id);
+      buildSlips(r, user);
+      db.updateWhere('PayRuns', function (x) { return x.id === r.id; }, { updatedAt: nowIso(), updatedBy: user.username, version: num(r.version) + 1 });
+      return runOut(findOrFail('PayRuns', r.id, 'Pay run'));
+    } };
+
+    A['payroll.adjust'] = { role: 'owner', write: true, fn: function (p, user) {
+      var s = findOrFail('Payslips', trim(p.slipId), 'Payslip');
+      var r = draftRun(s.runId);
+      if (p.version !== undefined && num(p.version) !== num(s.version)) fail('CONFLICT', 'This payslip was changed by ' + (s.updatedBy || 'someone else') + ' while you were editing. Your changes were not saved — reload to see the latest version.');
+      if (p.adjustments !== undefined && !Array.isArray(p.adjustments)) fail('VALIDATION', 'Adjustments must be a list.');
+      var adj = (p.adjustments || []).map(function (a) {
+        var kind = a.kind === 'deduct' ? 'deduct' : 'add';
+        return { kind: kind, label: reqStr(a.label, 'Item', 60), amount: round(reqNum(a.amount, 'Amount', { positive: true })) };
+      });
+      var u = findOrFail('Users', s.userId, 'Person');
+      var c = computeSlip(u, r, paySettings(), adj, ssoSoFar(u.id, r));
+      c.note = optStr(p.note !== undefined ? p.note : s.note, 200);
+      c.updatedAt = nowIso(); c.updatedBy = user.username; c.version = num(s.version) + 1;
+      db.updateWhere('Payslips', function (x) { return x.id === s.id; }, c);
+      var merged = {}; for (var k in s) merged[k] = s[k]; for (k in c) merged[k] = c[k];
+      return slipOut(merged);
+    } };
+
+    A['payroll.remove'] = { role: 'owner', write: true, fn: function (p) {
+      var r = draftRun(p.id);
+      db.removeWhere('Payslips', function (s) { return s.runId === r.id; });
+      db.removeWhere('PayRuns', function (x) { return x.id === r.id; });
+      return { ok: true };
+    } };
+
+    /** Paid: locked, and (by default) the labour cost goes into the expenses so the P&L includes it. */
+    A['payroll.markPaid'] = { role: 'owner', write: true, fn: function (p, user) {
+      var r = draftRun(p.id);
+      var payDate = p.payDate ? reqDate(p.payDate, 'Date') : r.payDate;
+      // Pay what is true now: the pay date (its month caps weekly SSO), then a fresh calculation (adjustments kept).
+      db.updateWhere('PayRuns', function (x) { return x.id === r.id; }, { payDate: payDate });
+      r = findOrFail('PayRuns', r.id, 'Pay run');
+      buildSlips(r, user);
+      var out = runOut(r);
+      if (!out.slips.length) fail('VALIDATION', 'This pay run has no payslips.');
+      // The time this run paid is marked, so it is never paid again.
+      var paidIds = {};
+      out.slips.forEach(function (s) {
+        entriesForRun(findOrFail('Users', s.userId, 'Person'), r).forEach(function (e) { paidIds[e.id] = 1; });
+      });
+      db.updateWhere('TimeEntries', function (e) { return paidIds[e.id]; }, { paidRunId: r.id });
+      var expenseId = '', cost = money2(out.gross + out.employerSso);
+      if (p.addExpense !== false && cost > 0) {
+        ensureCategories(user);
+        var cats = db.read('Categories').filter(function (c) { return c.type === 'expense' && bool(c.active); });
+        var wageCat = cats.filter(function (c) { return /wage|salar|ค่าจ้าง|เงินเดือน|ค่าแรง/i.test(c.name); })[0];
+        var exp = A['expenses.add'].fn({ date: payDate, categoryId: wageCat ? wageCat.id : '', category: wageCat ? '' : 'ค่าจ้างพนักงาน',
+          description: (r.cycle === 'monthly' ? 'เงินเดือน ' : 'ค่าแรงรายสัปดาห์ ') + r.periodStart + ' – ' + r.periodEnd,
+          amount: cost, paymentMethod: optStr(p.paymentMethod, 40), note: PAYROLL_NOTE + r.id }, user);
+        expenseId = exp.id;
+      }
+      var ts = nowIso();
+      db.updateWhere('PayRuns', function (x) { return x.id === r.id; },
+        { status: 'paid', payDate: payDate, paidAt: ts, paidBy: user.username, expenseId: expenseId, updatedAt: ts, updatedBy: user.username, version: num(r.version) + 1 });
+      return runOut(findOrFail('PayRuns', r.id, 'Pay run'));
+    } };
+
+    /** This month's labour cost, the runs, and which pay periods are due. */
+    A['payroll.overview'] = { role: 'owner', write: false, fn: function (p) {
+      var today = p.today ? reqDate(p.today, 'Today') : shopClock().date;
+      var month = trim(p.month) ? reqMonth(p.month) : today.slice(0, 7);
+      var runs = db.read('PayRuns');
+      var paidInMonth = runs.filter(function (r) { return r.status === 'paid' && r.payDate.slice(0, 7) === month; }).map(runOut);
+      var laborCost = money2(sum(paidInMonth, function (r) { return r.gross + r.employerSso; }));
+      var sales = round(sum(live(db.read('Sales')).filter(function (s) { return s.date.slice(0, 7) === month; }), function (s) { return num(s.total); }));
+      var ps = paySettings(), due = [], has = {};
+      runs.forEach(function (r) { has[r.cycle + '|' + r.periodStart] = 1; });
+      var approved = liveEntries().filter(function (e) { return trim(e.approvedAt); });
+      PAY_CYCLES.forEach(function (cycle) {
+        var people = db.read('Users').filter(function (u) { return u.role !== 'owner' && bool(u.active) && trim(u.payCycle) === cycle && num(u.payRate) > 0; });
+        if (!people.length) return;
+        var ids = {}; people.forEach(function (u) { ids[u.id] = 1; });
+        var seen = {};
+        var periods = cycle === 'monthly' ? [today, addDays(today.slice(0, 7) + '-01', -1)] : [today, addDays(today, -7), addDays(today, -14)];
+        periods.forEach(function (d, i) {
+          var per = payPeriod(cycle, d, ps);
+          if (seen[per.periodStart] || has[cycle + '|' + per.periodStart]) return;
+          seen[per.periodStart] = 1;
+          var current = i === 0;
+          var withTime = approved.some(function (e) { return ids[e.userId] && e.date >= per.periodStart && e.date <= per.periodEnd; }) ||
+            // Salaries are due every month once payroll is in use, clocked or not.
+            (cycle === 'monthly' && runs.some(function (r) { return r.cycle === 'monthly' && r.periodStart < per.periodStart; }));
+          // The current period shows from a week before pay day; earlier ones only if someone worked in them.
+          if ((current && dayCount(today, per.payDate) <= 8) || (!current && withTime)) due.push({ cycle: cycle, periodStart: per.periodStart, periodEnd: per.periodEnd, payDate: per.payDate, people: people.length });
+        });
+      });
+      var list = runs.slice().sort(function (a, b) { return b.periodStart.localeCompare(a.periodStart) || a.cycle.localeCompare(b.cycle); }).slice(0, 24).map(function (r) {
+        var o = runOut(r); delete o.slips; o.people = db.read('Payslips').filter(function (s) { return s.runId === r.id; }).length; return o;
+      });
+      var setUp = db.read('Users').filter(function (u) { return u.role !== 'owner' && bool(u.active); });
+      return { month: month, today: today, laborCost: laborCost, sales: sales, laborPct: sales ? Math.round(laborCost / sales * 1000) / 10 : null,
+        due: due, runs: list, peopleTotal: setUp.length, peopleSetUp: setUp.filter(function (u) { return num(u.payRate) > 0; }).length };
+    } };
+
+    /** My payslips (paid runs only). */
+    A['payroll.mine'] = { role: 'staff', write: false, fn: function (p, user) {
+      var runs = byId(db.read('PayRuns'));
+      var slips = db.read('Payslips').filter(function (s) { return s.userId === user.id && runs[s.runId] && runs[s.runId].status === 'paid'; })
+        .map(function (s) { var o = slipOut(s), r = runs[s.runId]; o.periodStart = r.periodStart; o.periodEnd = r.periodEnd; o.payDate = r.payDate; o.cycle = r.cycle; return o; })
+        .sort(function (a, b) { return b.payDate.localeCompare(a.payDate); });
+      return { slips: slips };
+    } };
 
     /* ---------- dispatcher ---------- */
 

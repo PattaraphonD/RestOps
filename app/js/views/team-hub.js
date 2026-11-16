@@ -8,8 +8,10 @@ import { renderSchedule } from './schedule.js';
 import { renderTimesheet, renderMyTime } from './timeclock.js';
 import { renderLeave } from './leave.js';
 import { renderTeam } from './team.js';
+import { renderPayroll, renderPayslips } from './payroll.js';
 
-const PAGES = { schedule: renderSchedule, timesheet: renderTimesheet, mytime: renderMyTime, leave: renderLeave, people: renderTeam };
+const PAGES = { schedule: renderSchedule, timesheet: renderTimesheet, mytime: renderMyTime, leave: renderLeave, people: renderTeam,
+  payroll: renderPayroll, payslips: renderPayslips };
 
 const TASK = {
   pinBlocked: { icon: 'users', cls: 'bad', href: () => '#/team/people' },
@@ -20,8 +22,8 @@ const TASK = {
 const span = (s) => `${s.startTime}–${s.endTime}`;
 
 export async function render(ctx) {
-  const [sub, arg] = ctx.params;
-  if (PAGES[sub]) return PAGES[sub](ctx, arg);
+  const [sub, arg, arg2] = ctx.params;
+  if (PAGES[sub]) return PAGES[sub](ctx, arg, arg2);
   return hub(ctx);
 }
 
@@ -72,6 +74,8 @@ async function hub(ctx) {
         ${manager ? tile('#/team/timesheet', 'clock', t('ts.title'), t('more.timesheetSub')) : ''}
         ${clocks ? tile('#/team/mytime', 'clock', t('clock.myTitle'), t('more.myTimeSub')) : ''}
         ${tile('#/team/leave', 'users', manager ? t('leave.titleTeam') : t('leave.title'), leaveSub)}
+        ${owner ? tile('#/team/payroll', 'wallet', t('pay.title'), t('hub.payrollSub')) : ''}
+        ${clocks ? tile('#/team/payslips', 'wallet', t('pay.mySlips'), t('hub.payslipsSub')) : ''}
         ${owner ? tile('#/team/people', 'users', t('hub.people'), t('hub.peopleSub', { n: state.boot.users.filter((u) => u.active).length })) : ''}
       </div></section>`);
   if (clocks) wireClock(el, r.clock, () => ctx.rerender());

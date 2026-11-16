@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v12';
+const KEY = 'ro.demo.db.v13';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -582,4 +582,14 @@ function seed(api, db, lang) {
   db.append('TimeEntries', rows);
   // Bon asks for a day off next week.
   api.runAs(usersById[team.bon], 'leave.request', { type: 'personal', fromDate: D(monday, 9), toDate: D(monday, 9), reason: tx('Family errand', 'ธุระที่บ้าน') });
+
+  // Payroll (v2.5): the manager on a monthly salary, the two staff on daily pay paid weekly; last week is paid.
+  as('settings.save', { values: { payHolidays: '2026-12-05, 2026-12-10, 2026-12-31, 2027-01-01', ssoRate: '5', ssoMinBase: '1650', ssoMaxBase: '17500' } });
+  as('payroll.setPay', { userId: team.manager, payType: 'monthly', payRate: 18000, payCycle: 'monthly', ssoEnrolled: true, payBank: tx('KBank', 'กสิกรไทย'), payAccount: '012-3-45678-9' });
+  as('payroll.setPay', { userId: team.staff, payType: 'daily', payRate: 450, payCycle: 'weekly', ssoEnrolled: true, payBank: tx('PromptPay', 'พร้อมเพย์'), payAccount: '081-234-5602' });
+  as('payroll.setPay', { userId: team.bon, payType: 'daily', payRate: 420, payCycle: 'weekly', ssoEnrolled: true, payBank: tx('PromptPay', 'พร้อมเพย์'), payAccount: '081-234-5603' });
+  const week = as('payroll.create', { cycle: 'weekly', periodStart: lastMonday });
+  const ploySlip = week.slips.find((x) => x.userId === team.staff);
+  if (ploySlip) as('payroll.adjust', { slipId: ploySlip.id, version: ploySlip.version, adjustments: [{ kind: 'add', label: 'เบี้ยขยัน', amount: 200 }] });
+  as('payroll.markPaid', { id: week.id, payDate: D(lastMonday, 6), addExpense: true });
 }
