@@ -3669,9 +3669,13 @@ var RestoCore = (function () {
       var open = !trim(e.clockOut);
       var late = w ? Math.max(0, minutesBetween(w.start, e.clockIn)) : 0;
       var early = w && !open ? Math.max(0, minutesBetween(e.clockOut, w.end)) : 0;
-      var worked = open ? null : Math.max(0, minutesBetween(e.clockIn, e.clockOut) - num(e.breakMinutes));
+      // Pay starts at the shift start: arriving early is recorded but not paid (owner's rule, 2026-11-16).
+      var paidStart = w && e.clockIn < w.start ? w.start : e.clockIn;
+      if (!open && paidStart > e.clockOut) paidStart = e.clockOut;
+      var worked = open ? null : Math.max(0, minutesBetween(paidStart, e.clockOut) - num(e.breakMinutes));
       return { id: e.id, userId: e.userId, date: e.date, shiftId: trim(e.shiftId), inAt: e.clockIn, outAt: trim(e.clockOut),
         inTime: shopClock(e.clockIn).time, outTime: open ? '' : shopClock(e.clockOut).time,
+        paidFrom: shopClock(paidStart).time, earlyInMinutes: Math.max(0, minutesBetween(e.clockIn, paidStart)),
         breakMinutes: num(e.breakMinutes), workedMinutes: worked, hours: worked === null ? null : Math.round(worked / 60 * 100) / 100,
         lateMinutes: late > lateGrace() ? late : 0, earlyMinutes: early > lateGrace() ? early : 0,
         inPlace: e.inPlace || '', inDistance: trim(e.inDistance) === '' ? '' : num(e.inDistance),

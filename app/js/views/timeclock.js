@@ -37,6 +37,7 @@ export function locate() {
 /** Flags on one time entry, as small pills. */
 export function entryFlags(e) {
   const f = [];
+  if (e.earlyInMinutes) f.push(html`<span class="pill">${t('clock.earlyIn', { d: duration(e.earlyInMinutes), time: e.paidFrom })}</span>`);
   if (e.lateMinutes) f.push(html`<span class="pill bad">${t('clock.lateBy', { d: duration(e.lateMinutes) })}</span>`);
   if (e.earlyMinutes) f.push(html`<span class="pill warn">${t('clock.earlyBy', { d: duration(e.earlyMinutes) })}</span>`);
   if (e.inPlace === 'far' || e.outPlace === 'far') f.push(html`<span class="pill warn">${t('clock.far', { d: km(e.inPlace === 'far' ? e.inDistance : e.outDistance) })}</span>`);
