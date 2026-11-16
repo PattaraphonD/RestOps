@@ -124,7 +124,7 @@ function decideSheet(ctx, l, approve) {
         const r = await call('leave.decide', { id: l.id, approve, note: f.note.value });
         close();
         toast(approve ? t('leave.approvedToast') : t('leave.rejectedToast'), 'good');
-        if (approve && r.shiftsAffected) toast(t('leave.shiftsAffected', { n: r.shiftsAffected, name: l.name }), 'warn', 8000, { label: t('sched.title'), onClick: () => { location.hash = `#/more/schedule/${l.fromDate}`; } });
+        if (approve && r.shiftsAffected) toast(t('leave.shiftsAffected', { n: r.shiftsAffected, name: l.name }), 'warn', 8000, { label: t('sched.title'), onClick: () => { location.hash = `#/team/schedule/${l.fromDate}`; } });
         renderLeave(ctx);
       }, f));
     },

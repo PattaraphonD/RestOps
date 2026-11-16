@@ -1,12 +1,12 @@
 // Service worker: caches the app shell so it opens instantly and works without signal.
 // Data calls go to the network (the Apps Script URL is never cached).
-const CACHE = 'resto-ops-v2.4.0';
+const CACHE = 'resto-ops-v2.4.1';
 const SHELL = [
   './', './index.html', './config.js', './manifest.webmanifest', './css/app.css',
   './js/costing.js', './js/pricing.js', './js/core.js', './js/i18n.js', './js/app.js', './js/api.js', './js/ui.js', './js/charts.js', './js/demo.js',
   './js/views/home.js', './js/views/stock.js', './js/views/sales.js', './js/views/menu.js', './js/views/more.js',
   './js/views/purchasing.js', './js/views/recipe-lines.js', './js/views/production.js', './js/views/channels.js', './js/views/pricing-view.js', './js/views/analysis.js', './js/views/promotions.js', './js/views/promo-builder.js', './js/views/sop.js', './js/views/close.js', './js/views/profit-board.js', './js/views/categories.js', './js/signin.js', './js/views/team.js',
-  './js/views/schedule.js', './js/views/timeclock.js', './js/views/leave.js', './js/vendor/qrcode.js',
+  './js/views/schedule.js', './js/views/timeclock.js', './js/views/leave.js', './js/views/team-hub.js', './js/vendor/qrcode.js',
   './icons/icon.svg', './icons/icon-192.png', './icons/icon-512.png', './icons/apple-touch-icon.png',
 ];
 

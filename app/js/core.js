@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.4.0';
+  var VERSION = '2.4.1';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -871,6 +871,7 @@ var RestoCore = (function () {
       var isOwner = user.role === 'owner';
       return {
         version: VERSION,
+        teamBadge: teamBadge(user),
         user: publicUser(user),
         settings: settings(),
         ingredients: stockLevels(),
@@ -2113,8 +2114,6 @@ var RestoCore = (function () {
           { key: 'team', done: active(db.read('Users')).some(function (u) { return u.role !== 'owner'; }) }
         ];
         setup = { done: steps.filter(function (x) { return x.done; }).length, total: steps.length, steps: steps };
-        var blocked = active(db.read('Users')).filter(function (u) { return bool(u.pinBlocked); });
-        if (blocked.length) tasks.push({ kind: 'pinBlocked', n: blocked.length, items: blocked.map(function (u) { return { id: u.id, name: staffName(u) }; }) });
         // Backups: the free database keeps none, so remind the owner after a month (once there is data).
         var hasData = db.read('Ingredients').length || db.read('Menu').length || db.read('Sales').length;
         if (hasData) {
@@ -2123,20 +2122,9 @@ var RestoCore = (function () {
           if (since === null || since >= BACKUP_REMINDER_DAYS) tasks.push({ kind: 'backup', n: 1, days: since });
         }
       }
-      if (manager) {
-        var review = liveEntries().filter(needsCheck).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
-        if (review.length) tasks.push({ kind: 'clockReview', n: review.length, items: [{ weekStart: weekStartOf(review[0].date) }] });
-        var pendingLeave = db.read('LeaveRequests').filter(function (l) { return l.status === 'pending' && (l.userId !== user.id || user.role === 'owner'); }).length;
-        if (pendingLeave) tasks.push({ kind: 'leavePending', n: pendingLeave });
-      }
-      // From Thursday, remind whoever plans the schedule to publish next week (once the shop uses the schedule).
-      var nextWeek = addDays(weekStartOf(today), 7), wd = weekdayOf(today);
-      if (manager && (wd >= 4 || wd === 0) && !publishOf(nextWeek) && liveShifts().length) {
-        tasks.push({ kind: 'schedulePublish', n: 1, items: [{ weekStart: nextWeek }] });
-      }
       var todayClose = closes[today] ? closes[today].row : null;
       return { day: { date: today, closed: !!todayClose, closedBy: todayClose ? todayClose.closedBy : '', closedAt: todayClose ? todayClose.closedAt : '' },
-        yesterdayClosed: yClosed, tasks: tasks, setup: setup, shifts: shiftsToday(today, user), clock: clockStatus(user) };
+        yesterdayClosed: yClosed, tasks: tasks, setup: setup };
     } };
 
     /* SOP manuals */
@@ -3904,6 +3892,51 @@ var RestoCore = (function () {
       var late = minutesBetween(w.start, now);
       return { state: 'notIn', lateMinutes: late > lateGrace() ? late : 0 };
     }
+
+    /* ---------- the Team tab (v2.4.1): everything about people, apart from the shop's work ---------- */
+
+    /** What the team needs from whoever runs it (owner and managers). */
+    function teamTasks(user, today) {
+      var tasks = [];
+      if (ROLES[user.role] < ROLES.manager) return tasks;
+      if (user.role === 'owner') {
+        var blocked = active(db.read('Users')).filter(function (u) { return bool(u.pinBlocked); });
+        if (blocked.length) tasks.push({ kind: 'pinBlocked', n: blocked.length, items: blocked.map(function (u) { return { id: u.id, name: staffName(u) }; }) });
+      }
+      var pendingLeave = db.read('LeaveRequests').filter(function (l) { return l.status === 'pending' && (l.userId !== user.id || user.role === 'owner'); }).length;
+      if (pendingLeave) tasks.push({ kind: 'leavePending', n: pendingLeave });
+      var review = liveEntries().filter(needsCheck).sort(function (a, b) { return a.date < b.date ? -1 : 1; });
+      if (review.length) tasks.push({ kind: 'clockReview', n: review.length, items: [{ weekStart: weekStartOf(review[0].date) }] });
+      // From Thursday, remind whoever plans the schedule to publish next week (once the shop uses the schedule).
+      var nextWeek = addDays(weekStartOf(today), 7), wd = weekdayOf(today);
+      if ((wd >= 4 || wd === 0) && !publishOf(nextWeek) && liveShifts().length) tasks.push({ kind: 'schedulePublish', n: 1, items: [{ weekStart: nextWeek }] });
+      return tasks;
+    }
+    /** For the Team tab's dot: 'missed' (a forgotten clock-out), 'due' (a shift running or about to start, not clocked in), 'in' or ''. */
+    function clockDue(user) {
+      if (user.role === 'owner') return '';
+      var open = openEntryOf(user.id), now = nowIso();
+      if (open) return isMissed(open) ? 'missed' : 'in';
+      var sh = shiftFor(user.id, shopClock().date, now, publishedOnlyFor(user));
+      if (!sh) return '';
+      var w = shiftWindow(sh);
+      var soon = minutesBetween(now, w.start) <= 30 && now < w.end;
+      return soon && !liveEntries().some(function (e) { return entryCovers(e, sh); }) ? 'due' : '';
+    }
+    function teamBadge(user) {
+      var tasks = teamTasks(user, shopClock().date);
+      return { clock: clockDue(user), tasks: sum(tasks, function (x) { return x.n; }) };
+    }
+
+    A['team.today'] = { role: 'staff', write: false, fn: function (p, user) {
+      var today = p.today ? reqDate(p.today, 'Today') : shopClock().date;
+      var sh = shiftsToday(today, user);
+      var all = publishedShifts(today, addDays(today, 13)), users = byId(db.read('Users'));
+      sh.upcoming = withCoworkers(all.filter(function (s) { return s.userId === user.id; }), all, users).slice(0, 4);
+      var bal = user.role === 'owner' ? null : balanceOf(user, today.slice(0, 4));
+      return { today: today, canManage: ROLES[user.role] >= ROLES.manager, clock: clockStatus(user), shifts: sh,
+        tasks: teamTasks(user, today), leave: bal, badge: teamBadge(user) };
+    } };
 
     /* ---------- leave (v2.4): requests, balances, approval ---------- */
 

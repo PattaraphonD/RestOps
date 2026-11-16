@@ -10,10 +10,6 @@ import { renderLog as production } from './production.js';
 import { renderChannels as channels } from './channels.js';
 import { renderManual as sop } from './sop.js';
 import { renderCategories as categories, categoryField, wireCategoryField } from './categories.js';
-import { renderTeam } from './team.js';
-import { renderSchedule } from './schedule.js';
-import { renderTimesheet, renderMyTime } from './timeclock.js';
-import { renderLeave } from './leave.js';
 
 const roleLabel = (r) => t(`role.${r}`);
 const roleHelp = (r) => t(`role.${r}Help`);
@@ -21,7 +17,10 @@ const ROLES = ['owner', 'manager', 'staff'];
 
 export async function render(ctx) {
   const [sub, arg] = ctx.params;
-  const pages = { expenses, suppliers, team: renderTeam, schedule: renderSchedule, timesheet: renderTimesheet, mytime: renderMyTime, leave: renderLeave, settings, account, production, channels, sop, categories };
+  // Team pages live under the ทีม tab now; old links (bookmarks, notes) go there.
+  const moved = { team: 'people', schedule: 'schedule', timesheet: 'timesheet', mytime: 'mytime', leave: 'leave' };
+  if (moved[sub]) { location.replace(`#/team/${moved[sub]}${arg ? '/' + arg : ''}`); return; }
+  const pages = { expenses, suppliers, settings, account, production, channels, sop, categories };
   if (pages[sub]) return pages[sub](ctx, arg);
   return index(ctx);
 }
@@ -38,10 +37,6 @@ function index({ el, setTitle, state, can }) {
     <section class="section"><div class="card"><ul class="list">
       ${item('#/orders', 'truck', t('more.orders'), t(can('manager') ? 'more.ordersSub' : 'more.ordersSubStaff', {
         n: (state.boot.purchasing || {}).awaiting || 0, due: (state.boot.purchasing || {}).expectedToday || 0 }))}
-      ${item('#/more/schedule', 'calendar', can('manager') ? t('sched.title') : t('sched.myTitle'), can('manager') ? t('more.scheduleSub') : t('more.myShiftsSub'))}
-      ${can('manager') ? item('#/more/timesheet', 'clock', t('ts.title'), t('more.timesheetSub')) : ''}
-      ${u.role !== 'owner' ? item('#/more/mytime', 'clock', t('clock.myTitle'), t('more.myTimeSub')) : ''}
-      ${item('#/more/leave', 'users', can('manager') ? t('leave.titleTeam') : t('leave.title'), can('manager') ? t('more.leaveTeamSub') : t('more.leaveSub'))}
     </ul></div></section>
     ${can('manager') ? html`<section class="section"><div class="section-head"><h2>${t('more.money')}</h2></div>
       <div class="card"><ul class="list">
@@ -54,7 +49,6 @@ function index({ el, setTitle, state, can }) {
         ${item('#/stock', 'box', t('more.ingredients'), t('more.ingredientsSub'))}
         ${item('#/more/channels', 'truck', t('channels.title'), t('more.nChannels', { n: (state.boot.channels || []).filter((c) => c.active).length }))}
         ${item('#/more/categories', 'grid', t('cat.title'), t('cat.moreSub', { n: (state.boot.categories || []).filter((c) => c.active).length }))}
-        ${can('owner') ? item('#/more/team', 'users', t('more.team'), t('more.nActiveUsers', { n: state.boot.users.filter((x) => x.active).length })) : ''}
         ${can('owner') ? item('#/more/settings', 'settings', t('more.settings'), t('more.settingsSub')) : ''}
       </ul></div></section>` : ''}
     <section class="section"><div class="section-head"><h2>${t('more.kitchen')}</h2></div>

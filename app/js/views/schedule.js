@@ -129,7 +129,7 @@ async function drawWeek(ctx) {
     </div>
     ${!edit && !w.published ? html`<div class="card" style="margin-top:12px">${emptyState('calendar', t('sched.notPublishedTitle'), t('sched.notPublishedText'))}</div>`
     : !people.length ? html`<div class="card" style="margin-top:12px">${emptyState('users', t('sched.noPeopleTitle'), t('sched.noPeopleText'),
-      html`<a class="btn primary" href="#/more/team">${t('sched.goTeam')}</a>`)}</div>`
+      html`<a class="btn primary" href="#/team/people">${t('sched.goTeam')}</a>`)}</div>`
     : html`
     ${edit && !w.shifts.length ? html`<div class="sched-hint">${icon('info')}<span>${t('sched.emptyHint')}</span></div>` : ''}
     ${viewSeg()}

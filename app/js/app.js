@@ -16,12 +16,14 @@ const VIEWS = {
   orders: () => import('./views/purchasing.js'),
   more: () => import('./views/more.js'),
   close: () => import('./views/close.js'),
+  team: () => import('./views/team-hub.js'),
 };
 const NAV = [
   ['home', 'nav.home', 'home'],
   ['stock', 'nav.stock', 'box'],
   ['menu', 'nav.menu', 'chef'],
   ['sales', 'nav.sales', 'receipt'],
+  ['team', 'nav.team', 'users'],
   ['more', 'nav.more', 'grid'],
 ];
 
@@ -53,7 +55,17 @@ function route() {
   return { name: VIEWS[parts[0]] ? parts[0] : 'home', params: parts.slice(1) };
 }
 
-function updateBadges() {
+export function updateBadges() {
+  const tb = $('.nav [data-badge="team"]');
+  if (tb && state.boot) {
+    // The ทีม tab: a dot when it's time to clock in (or a clock-out was forgotten); the number of team jobs for managers.
+    const b = state.boot.teamBadge || { clock: '', tasks: 0 };
+    const dot = b.clock === 'due' || b.clock === 'missed';
+    tb.textContent = b.tasks ? b.tasks : dot ? '!' : '';
+    tb.classList.toggle('hidden', !b.tasks && !dot);
+    tb.classList.toggle('dot', !b.tasks && dot);
+    tb.setAttribute('aria-label', b.tasks ? t('nav.teamBadge', { n: b.tasks }) : dot ? t(b.clock === 'missed' ? 'nav.clockMissed' : 'nav.clockDue') : '');
+  }
   const badge = $('.nav [data-badge="stock"]');
   if (!badge || !state.boot) return;
   const n = state.boot.ingredients.filter((i) => i.active && i.status !== 'ok').length;
@@ -84,7 +96,7 @@ function shell() {
       <main class="page" id="page" tabindex="-1"></main>
       <nav class="nav" aria-label="${t('nav.main')}">
         ${NAV.map(([key, label, ic]) => html`<a href="#/${key}" data-nav="${key}">${icon(ic)}<span>${t(label)}</span>
-          ${key === 'stock' || key === 'more' ? html`<span class="badge hidden" data-badge="${key}"></span>` : ''}</a>`)}
+          ${key === 'stock' || key === 'more' || key === 'team' ? html`<span class="badge hidden" data-badge="${key}"></span>` : ''}</a>`)}
       </nav>
     </div>`);
   const bar = $('.app-bar');
@@ -131,6 +143,12 @@ export async function render() {
     }
   }
   if (token !== renderToken) return;
+  let land = null;
+  try { land = sessionStorage.getItem('ro.land'); sessionStorage.removeItem('ro.land'); } catch { /* ignore */ }
+  if (land === 'team' && state.boot.teamBadge && ['due', 'missed'].includes(state.boot.teamBadge.clock) && location.hash !== '#/team') {
+    location.hash = '#/team';
+    return;
+  }
   const { name, params } = route();
   document.querySelectorAll('.nav a').forEach((a) => {
     // Orders (purchasing) live under More.
@@ -144,7 +162,7 @@ export async function render() {
   page.innerHTML = '';
   window.scrollTo(0, 0);
   try {
-    await mod.render({ el: page, params, state, setTitle, setActions, refresh, navigate, can, rerender: render,
+    await mod.render({ el: page, params, state, setTitle, setActions, refresh, navigate, can, rerender: render, updateBadges,
       stale: () => token !== renderToken });
   } catch (e) {
     if (e.code === 'AUTH' || e.code === 'DEVICE') return;
@@ -161,7 +179,8 @@ function renderLogin() {
   state.boot = null;
   document.title = `${t('login.signIn')} · ${t('app.name')}`;
   renderSignIn(root, {
-    onSignedIn: () => { location.hash = '#/home'; render(); },
+    // Staff arriving for a shift land on the ทีม tab, where the clock-in button is.
+    onSignedIn: () => { try { sessionStorage.setItem('ro.land', 'team'); } catch { /* ignore */ } location.hash = '#/home'; render(); },
     passwordLogin: renderPasswordLogin,
   });
 }
