@@ -6,12 +6,13 @@ import * as ort from '../../vendor/ocr/ort.wasm.bundle.min.mjs';
 const BASE = new URL('../../vendor/ocr/', import.meta.url).href;
 const FILES = { wasm: 'ort-wasm-simd-threaded.wasm', det: 'det.onnx', rec: 'rec-th.onnx', dict: 'dict-th.json' };
 const SIZES = { wasm: 11210254, det: 4826518, rec: 7891015, dict: 2818 };   // for the download progress bar
-import { CACHE, CACHE_PREFIX } from './engine-meta.js';
+import { CACHE, CACHE_PREFIX, betterReading } from './engine-meta.js';
 export { CACHE };
 
 // PaddleOCR settings (inference.yml): detector long side 960, DB thresholds; recogniser height 48.
 const DET_LONG = 1536, DET_THRESH = 0.3, BOX_THRESH = 0.55, UNCLIP = 1.6;
 const REC_H = 48, REC_BATCH = 6, REC_MIN_W = 320, REC_MAX_W = 3200;
+const RETRY_CONF = 0.9, RETRY_MAX = 40;
 
 ort.env.wasm.numThreads = 1;      // no cross-origin isolation needed
 ort.env.wasm.proxy = false;
@@ -100,6 +101,35 @@ function toCanvas(bitmap, angleDeg = 0) {
   return c;
 }
 
+/*
+ * A second look at lines the reader was unsure of. Two cleaned-up versions of the line are read, and a reading is kept
+ * only when the reader is surer of it than of the first one, so a clean photo can't get worse. (Cleaning the whole
+ * photo instead was tried on the owner's receipts: it helped one and turned misread totals into items on another.)
+ */
+const stretchTo = (gray, px, loQ, hiQ) => {
+  const n = gray.length, hist = new Uint32Array(256);
+  for (let i = 0; i < n; i++) hist[gray[i]]++;
+  const at = (q) => { let acc = 0; for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * q) return v; } return 255; };
+  const lo = at(loQ), hi = Math.max(lo + 1, at(hiQ));
+  for (let i = 0; i < n; i++) {
+    const v = Math.max(0, Math.min(255, ((gray[i] - lo) * 255) / (hi - lo))), p = i * 4;
+    px[p] = px[p + 1] = px[p + 2] = v;
+  }
+};
+/** Only the ink: coloured paper and print (Makro's pink and red) turn white, dark ink stays, stretched to black and white. */
+function inkOnly(px) {
+  const n = px.length / 4, gray = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { const p = i * 4; gray[i] = Math.max(px[p], px[p + 1], px[p + 2]); }
+  stretchTo(gray, px, 0.02, 0.9);
+}
+/** Faded print (old thermal paper, dim light): the line in grey, its faintest ink stretched to black. */
+function contrast(px) {
+  const n = px.length / 4, gray = new Uint8Array(n);
+  for (let i = 0; i < n; i++) { const p = i * 4; gray[i] = (px[p] * 77 + px[p + 1] * 150 + px[p + 2] * 29) >> 8; }
+  stretchTo(gray, px, 0.01, 0.95);
+}
+const RECHECKS = [inkOnly, contrast];
+
 /* ------------------------------------------------------------ detection (DB) */
 
 async function detect(src) {
@@ -166,7 +196,7 @@ function weightedMedian(list) {
 
 /* ------------------------------------------------------------ recognition (CTC) */
 
-async function recognise(src, boxes) {
+async function recognise(src, boxes, filter = null) {
   const g = ctx2d(src);
   const items = boxes.map((b, i) => {
     const w = Math.max(1, Math.round(b.w)), h = Math.max(1, Math.round(b.h));
@@ -181,6 +211,7 @@ async function recognise(src, boxes) {
       const c = canvas(it.tw, REC_H), cg = ctx2d(c);
       cg.drawImage(src, it.b.x, it.b.y, it.b.w, it.b.h, 0, 0, it.tw, REC_H);
       const px = cg.getImageData(0, 0, it.tw, REC_H).data, base = k * 3 * plane;
+      if (filter) filter(px);
       for (let yy = 0; yy < REC_H; yy++) {
         for (let xx = 0; xx < it.tw; xx++) {
           const p = (yy * it.tw + xx) * 4, o = yy * maxW + xx;
@@ -225,6 +256,15 @@ export async function read(bitmap, progress = () => {}) {
   progress({ stage: 'read', boxes: found.boxes.length });
   const t1 = Date.now();
   const texts = await recognise(src, found.boxes);
+  // Lines the reader was unsure of get a second look (each clean-up in turn, only on the lines still unsure).
+  for (const filter of RECHECKS) {
+    const weak = texts.map((t, i) => (t.text && t.conf < RETRY_CONF ? i : -1)).filter((i) => i >= 0)
+      .sort((a, b) => texts[a].conf - texts[b].conf).slice(0, RETRY_MAX);
+    if (!weak.length) break;
+    progress({ stage: 'recheck', boxes: weak.length });
+    const again = await recognise(src, weak.map((i) => found.boxes[i]), filter);
+    weak.forEach((i, k) => { if (betterReading(texts[i], again[k])) texts[i] = again[k]; });
+  }
   const boxes = found.boxes.map((b, i) => ({ x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h), text: texts[i].text, conf: Math.round(texts[i].conf * 1000) / 1000 }))
     .filter((b) => b.text);
   // The straightened photo goes back too: the review screen shows each line's strip of it.

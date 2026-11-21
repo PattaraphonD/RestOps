@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.7.0';
+  var VERSION = '2.8.0';
 
   /* ------------------------------------------------------------------ schema */
 

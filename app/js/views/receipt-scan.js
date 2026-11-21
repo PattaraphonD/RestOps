@@ -63,8 +63,11 @@ async function scan(ctx, file, onDone) {
         setBar(Math.round(4 + p.p * 56));
         if (msg() && first) msg().textContent = t('scan.downloading', { p: Math.round(p.p * 100) });
       } else if (p.stage === 'read') {
-        setBar(75);
+        setBar(70);
         if (msg()) msg().textContent = t('scan.found', { n: p.boxes });
+      } else if (p.stage === 'recheck') {
+        setBar(88);
+        if (msg()) msg().textContent = t('scan.recheck', { n: p.boxes });
       }
     });
     if (cancelled) { if (result.image && result.image.close) result.image.close(); return; }
