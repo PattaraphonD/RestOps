@@ -1,0 +1,54 @@
+Receipt reader (on-phone OCR) — third-party files in this folder
+
+- ort.wasm.bundle.min.mjs, ort-wasm-simd-threaded.mjs, ort-wasm-simd-threaded.wasm
+  ONNX Runtime Web 1.22.0 — https://github.com/microsoft/onnxruntime — MIT License, Copyright (c) Microsoft Corporation.
+- det.onnx  — PaddleOCR PP-OCRv5_mobile_det (https://huggingface.co/PaddlePaddle/PP-OCRv5_mobile_det_onnx) — Apache License 2.0
+- rec-th.onnx, dict-th.json — PaddleOCR th_PP-OCRv5_mobile_rec (https://huggingface.co/PaddlePaddle/th_PP-OCRv5_mobile_rec_onnx) — Apache License 2.0
+  Copyright (c) PaddlePaddle Authors. dict-th.json is the model's character list from its inference.yml.
+
+SHA-256
+  det.onnx                      a431985659dc921974177a95adcfbb90fd9e51989a5e04d70d0b75f597b6e61d
+  rec-th.onnx                   27618be66018f8598ac0a526a593f9f1cebf794e7eded93428e8fb016e537f5f
+  ort-wasm-simd-threaded.wasm   71aef04959c5c1b6de461b6538e2058e306610034a85aad2742d0c7fd4533fe4
+  ort-wasm-simd-threaded.mjs    30dd851d9c00622940500f71ddd2ff8820c5cb65270816080175b958705385a8
+  ort.wasm.bundle.min.mjs       e53392ea5f0e654acf1866c16564b340661ed5d238f692c3c2bd40b940f924a2
+  dict-th.json                  536d86d24c3a5430f91ea10e08bd7b0e36d1c860525a21dc5cb65e30d5a53985
+
+------------------------------------------------------------------------------
+MIT License (ONNX Runtime)
+
+Copyright (c) Microsoft Corporation
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+------------------------------------------------------------------------------
+Apache License 2.0 (PaddleOCR models)
+
+Copyright (c) PaddlePaddle Authors. All Rights Reserved.
+
+Licensed under the Apache License, Version 2.0 (the "License"); you may not use
+these files except in compliance with the License. You may obtain a copy of the
+License at http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software distributed
+under the License is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR
+CONDITIONS OF ANY KIND, either express or implied. See the License for the
+specific language governing permissions and limitations under the License.
+The model files are used unmodified; dict-th.json is the model's own character
+list (from its inference.yml) stored as JSON.

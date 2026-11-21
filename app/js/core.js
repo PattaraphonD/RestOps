@@ -13,7 +13,7 @@
 var RestoCore = (function () {
   'use strict';
 
-  var VERSION = '2.6.0';
+  var VERSION = '2.7.0';
 
   /* ------------------------------------------------------------------ schema */
 
@@ -538,6 +538,7 @@ var RestoCore = (function () {
     [/^Wrong code\. Check your authenticator app and try again\.$/, 'รหัสไม่ถูกต้อง ดูรหัสในแอปยืนยันตัวตนแล้วลองอีกครั้ง'],
     [/^Start again: the setup code has expired\.$/, 'หมดเวลาตั้งค่า เริ่มใหม่อีกครั้ง'],
     [/^Turn on 2-step verification first\.$/, 'เปิดการยืนยัน 2 ขั้นตอนก่อน'],
+    [/^This receipt was already recorded on (\d{4})-(\d{2})-(\d{2})\.$/, function (m) { return 'ใบเสร็จนี้บันทึกไปแล้วเมื่อ ' + Number(m[3]) + '/' + Number(m[2]) + '/' + (Number(m[1]) + 543); }],
     [/^Turn 2-step verification off first\.$/, 'ปิดการยืนยัน 2 ขั้นตอนก่อน แล้วค่อยตั้งค่าใหม่'],
     [/^Too many wrong codes today\. Use a recovery code, or try again tomorrow\.$/, 'วันนี้ใส่รหัสผิดหลายครั้งเกินไป ใช้รหัสสำรอง หรือลองใหม่พรุ่งนี้'],
     [/^This password is too easy to guess\. Use at least 8 characters that are not a common word or your name\.$/, 'รหัสผ่านนี้เดาง่ายเกินไป ใช้อย่างน้อย 8 ตัวอักษร ที่ไม่ใช่คำทั่วไปหรือชื่อของคุณ'],
@@ -882,7 +883,7 @@ var RestoCore = (function () {
 
     /** What a staff member may record (v2.2). Managers and owners can do everything their role allows. */
     var PERMISSIONS = ['sales', 'stock', 'receive', 'produce', 'close'];
-    var PERMISSION_OF = { 'sales.add': 'sales', 'movements.add': 'stock', 'purchases.add': 'receive', 'po.receive': 'receive',
+    var PERMISSION_OF = { 'sales.add': 'sales', 'movements.add': 'stock', 'purchases.add': 'receive', 'purchases.fromReceipt': 'receive', 'po.receive': 'receive',
       'production.add': 'produce', 'day.close': 'close' };
     /** A staff member with no list (accounts from before v2.2) keeps every staff permission. */
     function permissionsOf(u) {
@@ -1272,6 +1273,64 @@ var RestoCore = (function () {
     A['purchases.add'] = { role: 'staff', write: true, fn: function (p, user) {
       return addPurchases({ date: p.date, supplierId: p.supplierId, invoiceRef: p.invoiceRef, note: p.note },
         (p.lines || []).map(function (l) { return { ingredientId: l.ingredientId, qty: l.qty, unitCost: l.unitCost }; }), user);
+    } };
+
+    /**
+     * Stock in from a scanned receipt (v2.7): the same as purchases.add, plus a check that this receipt isn't already in,
+     * and the supplier's product codes remembered (SupplierItems), so the next receipt from them matches by itself.
+     * lines: [{ ingredientId, qty, unitCost, code, receiptUnit, factor, unitPrice, learn }]
+     */
+    A['purchases.fromReceipt'] = { role: 'staff', write: true, fn: function (p, user) {
+      var supplierId = trim(p.supplierId), ref = optStr(p.invoiceRef, 60);
+      if (supplierId && ref && !p.force) {
+        var dup = live(db.read('Purchases')).filter(function (r) { return r.supplierId === supplierId && trim(r.invoiceRef) === ref; })[0];
+        if (dup) fail('DUPLICATE', 'This receipt was already recorded on ' + dup.date + '.');
+      }
+      var lines = p.lines || [];
+      var result = addPurchases({ date: p.date, supplierId: supplierId, invoiceRef: ref, note: optStr(p.note, 200) || 'สแกนใบเสร็จ' },
+        lines.map(function (l) { return { ingredientId: l.ingredientId, qty: l.qty, unitCost: l.unitCost }; }), user);
+      var learned = 0, kept = 0, manager = ROLES[user.role] >= ROLES.manager;
+      if (supplierId) {
+        ensureSupplierItems(user);
+        var ts = nowIso();
+        lines.forEach(function (l) {
+          var code = trim(l.code);
+          // The pack is what was received per receipt unit (ingredient units ÷ receipt quantity), worked out here, not trusted from the phone.
+          var factor = num(l.receiptQty) > 0 ? num(l.qty) / num(l.receiptQty) : num(l.factor);
+          if (!l.learn || !/^\d{6,20}$/.test(code) || !(factor > 0) || factor > 100000) return;
+          // In-store weighed barcodes (2 + 12 digits) change with every package: nothing to remember.
+          if (/^2\d{12}$/.test(code)) return;
+          var price = round(Math.max(0, num(l.unitPrice)), 4), packName = optStr(l.receiptUnit, 40);
+          var have = active(db.read('SupplierItems')).filter(function (r) { return r.supplierId === supplierId && trim(r.supplierCode) === code; })[0];
+          if (have) {
+            var same = have.ingredientId === l.ingredientId && Math.abs(num(have.packQty) - round(factor, 4)) < 1e-6;
+            if (same) {
+              if (Math.abs(num(have.packPrice) - price) > 1e-6) db.updateWhere('SupplierItems', function (r) { return r.id === have.id; }, { packPrice: price, updatedAt: ts, updatedBy: user.username });
+              return;
+            }
+            // A code the shop already knows is changed only by a manager (staff can't remap what the manager set up).
+            if (!manager) { kept++; return; }
+            db.updateWhere('SupplierItems', function (r) { return r.id === have.id; }, { ingredientId: l.ingredientId, packName: packName || have.packName,
+              packQty: round(factor, 4), packPrice: price, updatedAt: ts, updatedBy: user.username, version: num(have.version) + 1 });
+          } else {
+            db.append('SupplierItems', [{ id: newId('SPI'), supplierId: supplierId, ingredientId: l.ingredientId, supplierCode: code, packName: packName,
+              packQty: round(factor, 4), packPrice: price, minPacks: 1, preferred: false, active: true,
+              createdAt: ts, updatedAt: ts, updatedBy: user.username, version: 1 }]);
+          }
+          // Only a manager's save changes which supplier an ingredient is usually bought from.
+          if (manager) {
+            var hasPreferred = active(db.read('SupplierItems')).some(function (r) { return r.ingredientId === l.ingredientId && bool(r.preferred); });
+            if (!hasPreferred) {
+              var mine = active(db.read('SupplierItems')).filter(function (r) { return r.supplierId === supplierId && trim(r.supplierCode) === code; })[0];
+              if (mine) setPreferred(l.ingredientId, mine.id);
+            }
+          }
+          learned++;
+        });
+      }
+      result.learned = learned;
+      result.keptExisting = kept;
+      return result;
     } };
 
     A['purchases.list'] = { role: 'staff', write: false, fn: function (p) {

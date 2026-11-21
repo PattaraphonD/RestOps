@@ -134,6 +134,7 @@ const P = {
   edit: '<path d="M4 20h4L19 9l-4-4L4 16Z"/><path d="m13.5 6.5 4 4"/>',
   scale: '<path d="M12 3v18M5 21h14M6 7h12"/><path d="m6 7-3 7a3 3 0 0 0 6 0Zm12 0-3 7a3 3 0 0 0 6 0Z"/>',
   swap: '<path d="M7 4 3 8l4 4"/><path d="M3 8h14"/><path d="m17 12 4 4-4 4"/><path d="M21 16H7"/>',
+  camera: '<path d="M4 8h3l2-3h6l2 3h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   calendar: '<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   copy: '<rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/>',
@@ -207,7 +208,7 @@ export function registerOverlay(onBack) {
  * Bottom sheet dialog.
  * openSheet({ title, body, foot, onMount(el, close), onClose() }) → { el, close }
  */
-export function openSheet({ title, body, foot, onMount, onClose, wide }) {
+export function openSheet({ title, body, foot, onMount, onClose, wide, dismissible = true }) {
   const scrim = document.createElement('div');
   scrim.className = 'scrim';
   mount(scrim, html`
@@ -237,7 +238,8 @@ export function openSheet({ title, body, foot, onMount, onClose, wide }) {
   };
   openSheets.push(api);
   scrim.addEventListener('click', (e) => {
-    if (e.target === scrim || e.target.closest('[data-close]')) api.close();
+    // A sheet with work in it (dismissible: false) closes only with its own buttons, not a stray tap beside it.
+    if ((e.target === scrim && dismissible) || e.target.closest('[data-close]')) api.close();
   });
   scrim.addEventListener('keydown', (e) => { if (e.key === 'Escape') api.close(); });
   onMount && onMount(api.el, api.close);

@@ -1,6 +1,6 @@
 // Home: dashboard (managers/owners) or today's overview (staff).
 import { call } from '../api.js';
-import { html, mount, icon, money, pct, today, addDays, fmtMonth, fmtDate, timeOf, number, $, $$, emptyState, printHtml } from '../ui.js';
+import { html, raw, mount, icon, money, pct, today, addDays, fmtMonth, fmtDate, timeOf, number, $, $$, emptyState, printHtml } from '../ui.js';
 import { produceSheet } from './production.js';
 import { cashFlowChart, barList } from '../charts.js';
 import { t } from '../i18n.js';
@@ -87,16 +87,36 @@ function todayCard(sum, extra = []) {
     return html`<li>${href ? html`<a class="row" href="${href}">${body}</a>` : html`<button class="row" data-task="${x.kind}">${body}</button>`}</li>`;
   };
   const d = sum.day;
-  return html`<section class="section today-card">
-    <div class="section-head"><h2>${t('today.title')}</h2><span class="small muted">${fmtDate(d.date, { weekday: 'long', day: 'numeric', month: 'long' })}</span></div>
+  // Collapsed to one line by default; the colour, the count and a pulsing dot (new since last opened today) still ask for a look.
+  const level = (x) => ((TASK[x.kind] || {}).cls === 'bad' ? 2 : (TASK[x.kind] || {}).cls === 'warn' ? 1 : 0);
+  tasks.sort((a, b) => level(b) - level(a));
+  const urgent = tasks.filter((x) => level(x) === 2).length;
+  const tone = urgent ? 'bad' : tasks.length ? 'warn' : 'good';
+  const sig = `${d.date}|${tasks.map((x) => `${x.kind}:${x.n}`).join(',')}`;
+  const open = todayState().open === d.date;
+  const fresh = tasks.length > 0 && todayState().seen !== sig;
+  const top = tasks[0];
+  const preview = top ? t(`today.task.${top.kind}`, { n: top.n }) + (tasks.length > 1 ? ` ${t('today.andMore', { n: tasks.length - 1 })}` : '') : t('today.allClear');
+  const closeBtn = d.closed ? html`<a class="today-closed" href="#/close">${icon('check')}${t('today.closed', { who: d.closedBy, time: timeOf(d.closedAt) })}</a>`
+    : allowed('close') ? html`<a class="btn accent block" href="#/close">${icon('clipboard')}${t('today.closeDay')}</a>` : '';
+  return html`<section class="section today-card tone-${tone}${open ? ' is-open' : ''}" data-sig="${sig}" data-date="${d.date}">
     <div class="card">
-      ${tasks.length ? html`<ul class="list">${tasks.map(row)}</ul>`
-        : html`<div class="row" style="min-height:64px"><span class="avatar good">${icon('check')}</span><span class="grow"><div class="title">${t('today.allClear')}</div><div class="sub">${t('today.allClearSub')}</div></span></div>`}
-      <div style="padding:12px 14px;border-top:1px solid var(--line)">
-        ${d.closed ? html`<a class="btn block" href="#/close">${icon('check')}${t('today.closed', { who: d.closedBy, time: timeOf(d.closedAt) })}</a>`
-          : allowed('close') ? html`<a class="btn accent block" href="#/close">${icon('clipboard')}${t('today.closeDay')}</a>` : ''}
-      </div>
+      <button type="button" class="today-head" aria-expanded="${open}" ${tasks.length ? '' : raw('disabled')} aria-controls="today-list">
+        <span class="today-badge">${tasks.length ? tasks.length : icon('check')}${fresh ? html`<i class="today-ping" aria-hidden="true"></i>` : ''}</span>
+        <span class="grow"><b>${t('today.title')}</b><span class="today-date">${fmtDate(d.date, { weekday: 'short', day: 'numeric', month: 'short' })}</span>
+          <span class="today-preview">${urgent ? html`<em>${t('today.urgentN', { n: urgent })}</em> · ` : ''}${preview}</span></span>
+        ${tasks.length ? icon('chevR', 'today-chev') : ''}
+      </button>
+      ${tasks.length ? html`<ul class="list today-list" id="today-list" ${open ? '' : raw('hidden')}>${tasks.map(row)}</ul>` : ''}
+      ${closeBtn ? html`<div class="today-foot">${closeBtn}</div>` : ''}
     </div></section>`;
+}
+/** Today card memory on this phone: which day it was opened, and what was there when last looked at. */
+function todayState() {
+  try { return JSON.parse(localStorage.getItem('ro.today') || '{}'); } catch { return {}; }
+}
+function saveTodayState(patch) {
+  try { localStorage.setItem('ro.today', JSON.stringify({ ...todayState(), ...patch })); } catch { /* storage blocked */ }
 }
 
 const SETUP_HREF = { restaurant: '#/more/settings', channels: '#/more/channels', suppliers: '#/more/suppliers', ingredients: '#/stock', dishes: '#/menu', team: '#/team/people' };
@@ -122,6 +142,19 @@ function todaySummary(d) {
 /** The clock card for people who clock (not the owner); otherwise the plain "my shift" card. */
 
 function wireToday(ctx, host, sum) {
+  const card = host.querySelector('.today-card');
+  const head = card && card.querySelector('.today-head');
+  if (head && !head.disabled) {
+    head.addEventListener('click', () => {
+      const open = head.getAttribute('aria-expanded') !== 'true';
+      head.setAttribute('aria-expanded', open);
+      card.classList.toggle('is-open', open);
+      card.querySelector('.today-list').hidden = !open;
+      // Opening it counts as having seen today's list: the dot stays off until something new comes up.
+      saveTodayState(open ? { open: card.dataset.date, seen: card.dataset.sig } : { open: '' });
+      card.querySelector('.today-ping')?.remove();
+    });
+  }
   $$('[data-task="preps"]', host).forEach((b) => b.addEventListener('click', () => {
     const p = (sum.tasks.find((x) => x.kind === 'preps') || { items: [] }).items[0];
     produceSheet(ctx, p && p.id);

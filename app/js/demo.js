@@ -4,7 +4,7 @@
 /* global RestoCore, RestoCosting */
 import { getLang, defaults, t } from './i18n.js';
 
-const KEY = 'ro.demo.db.v13';
+const KEY = 'ro.demo.db.v14';
 export const DEMO_PASSWORD = 'demo1234';
 
 function uuid() {
@@ -100,6 +100,9 @@ const SUPPLIERS = [
   { key: 'veg', en: ['Talad Thai Produce', 'Khun Malee'], th: ['ตลาดไทยผักสด', 'คุณมาลี'], phone: '02-555-0103', email: '', lead: 0, terms: 0 },
   { key: 'dry', en: ['Rungrueang Wholesale', 'Account desk'], th: ['ค้าส่งรุ่งเรือง', 'ฝ่ายบัญชี'], phone: '02-555-0104', email: 'b2b@example.com', lead: 2, terms: 30,
     tax: ['0105561098765', '00002', '15/7 ถนนบางนา-ตราด บางพลี สมุทรปราการ 10540', true, 'ไทยพาณิชย์', '405-1-23456-7'] },
+  // A wholesale chain, for trying receipt scanning (the scanner finds it by name or tax ID).
+  { key: 'makro', en: ['Makro', 'Store'], th: ['แม็คโคร', 'หน้าร้าน'], phone: '02-067-8999', email: '', lead: 0, terms: 0,
+    tax: ['0107536000414', '00174', 'สาขาภูเก็ต', true, '', ''] },
 ];
 
 // [key, English name, Thai name, category, unit, cost, supplier, yield %]

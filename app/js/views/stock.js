@@ -7,6 +7,7 @@ import {
 } from '../ui.js';
 import { list, allowed } from '../app.js';
 import { t } from '../i18n.js';
+import { scanCard, wireScanCard } from './receipt-scan.js';
 import { sopSheet } from './sop.js';
 import { recipeLines } from './recipe-lines.js';
 import { produceSheet } from './production.js';
@@ -588,7 +589,9 @@ function purchaseSheet(ctx, ingredientId) {
   const preset = ings.find((i) => i.id === ingredientId);
   openSheet({
     title: t('stock.purchaseTitle'),
-    body: html`<form id="f" novalidate>
+    body: html`${scanCard()}
+      <div class="scan-or"><span>${t('scan.orByHand')}</span></div>
+      <form id="f" novalidate>
       <div class="form-row">
         <label class="field"><span class="label">${t('common.date')}</span><input class="input" type="date" name="date" value="${today()}" max="${today()}"></label>
         <label class="field"><span class="label">${t('stock.invoiceNo')}</span><input class="input" name="invoiceRef" maxlength="60" placeholder="${t('common.optional')}"></label>
@@ -602,6 +605,10 @@ function purchaseSheet(ctx, ingredientId) {
     foot: html`<div class="grow" style="align-self:center"><div class="small muted">${t('common.total')}</div><b class="tabular" id="total" style="font-size:18px">${money(0)}</b></div>
       <button class="btn primary" id="save">${t('stock.savePurchase')}</button>`,
     onMount(el, close) {
+      wireScanCard(el, ctx, {
+        onStart: () => close(),
+        onDone: async (out) => { await ctx.refresh(); redraw(ctx); if (out) impactToast(ctx, out.impact); },
+      });
       const form = el.querySelector('#f');
       const host = el.querySelector('#lines');
       const editor = lineEditor(host, {
